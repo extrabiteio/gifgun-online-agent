@@ -25,7 +25,7 @@ The report is a local review file. The release workflow generates it again from 
 Use the separate repository identity. Create a lightweight tag so that the tag does not contain a second author record.
 
 ```sh
-version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+version=$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')
 git tag "v${version}"
 git push origin "v${version}"
 ```

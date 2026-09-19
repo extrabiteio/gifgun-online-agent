@@ -35,7 +35,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          version=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          version=$(cargo metadata --locked --no-deps --format-version 1 | python -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')
           contract_digest=$(python -c 'import json; print(json.load(open("contract/agent-contract.json"))["contractDigest"])')
           test -n "$version"
           test -n "$contract_digest"
