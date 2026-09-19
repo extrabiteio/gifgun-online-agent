@@ -13,6 +13,8 @@ Use short, direct sentences for new or changed English text. Use one term for on
 - Keep session data private on disk.
 - Do not put credentials, media bytes, project bytes, local file paths, browser object URLs, or user data in command JSON, logs, errors, tests, or documentation.
 - Use synthetic credentials and data in tests.
+- Do not run CI jobs for pull requests from forks. Only run pull-request code from branches in this repository.
+- Do not persist checkout credentials. Keep the default workflow token read-only and give write access only to the manual release job.
 
 ## Browser contract
 
