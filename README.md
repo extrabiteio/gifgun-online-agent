@@ -56,7 +56,7 @@ Do not edit these files by hand. Update both files together from the matching Gi
 
 ## Releases
 
-This repository currently provides source code only. It does not publish executable files.
+This repository currently provides source code only. It does not publish executable files. See the [release process](docs/RELEASING.md) for the reviewed manual publication procedure.
 
 ## Contributing
 

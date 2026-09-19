@@ -1,0 +1,267 @@
+name: Release native agents
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z source tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-agent-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate source tag
+    runs-on: ubuntu-latest
+    outputs:
+      contract-digest: ${{ steps.release.outputs.contract-digest }}
+      source-commit: ${{ steps.release.outputs.source-commit }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag }}
+      - id: release
+        name: Validate version, contract, and tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          contract_digest=$(python -c 'import json; print(json.load(open("contract/agent-contract.json"))["contractDigest"])')
+          test -n "$version"
+          test -n "$contract_digest"
+          test "$RELEASE_TAG" = "v${version}"
+
+          tag_ref="refs/tags/${RELEASE_TAG}"
+          git show-ref --verify --quiet "$tag_ref"
+          source_commit=$(git rev-parse HEAD)
+          test "$source_commit" = "$(git rev-parse "${tag_ref}^{commit}")"
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "contract-digest=$contract_digest" >> "$GITHUB_OUTPUT"
+          echo "source-commit=$source_commit" >> "$GITHUB_OUTPUT"
+
+  package-macos:
+    name: Package macOS agents
+    needs: validate
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Install Rust targets
+        run: rustup target add --toolchain 1.90.0 aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build and verify executables
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          build_target() {
+            artifact_target="$1"
+            rust_target="$2"
+            deployment_target="$3"
+            expected_arch="$4"
+
+            MACOSX_DEPLOYMENT_TARGET="$deployment_target" \
+              cargo build --locked --release --target "$rust_target"
+
+            source="target/${rust_target}/release/gifgun-agent"
+            destination="release/gifgun-agent-${artifact_target}"
+            test -s "$source"
+            mkdir -p release
+            cp "$source" "$destination"
+            lipo -archs "$destination" | grep --word-regexp "$expected_arch"
+          }
+
+          build_target darwin-arm64 aarch64-apple-darwin 11.0 arm64
+          build_target darwin-x64 x86_64-apple-darwin 10.15 x86_64
+      - name: Stage macOS Apple silicon executable
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-gifgun-agent-darwin-arm64
+          path: release/gifgun-agent-darwin-arm64
+          if-no-files-found: error
+          retention-days: 1
+      - name: Stage macOS Intel executable
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-gifgun-agent-darwin-x64
+          path: release/gifgun-agent-darwin-x64
+          if-no-files-found: error
+          retention-days: 1
+
+  package-portable:
+    name: Package ${{ matrix.artifact_target }} agent
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact_target: linux-x64
+            executable: gifgun-agent
+            os: ubuntu-latest
+            output_name: gifgun-agent-linux-x64
+            rust_target: x86_64-unknown-linux-musl
+          - artifact_target: windows-x64
+            executable: gifgun-agent.exe
+            os: windows-latest
+            output_name: gifgun-agent-windows-x64.exe
+            rust_target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Install Rust target
+        shell: bash
+        run: rustup target add --toolchain 1.90.0 "${{ matrix.rust_target }}"
+      - name: Install Linux static linker
+        if: matrix.artifact_target == 'linux-x64'
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - name: Build and verify executable
+        shell: bash
+        env:
+          CONTRACT_DIGEST: ${{ needs.validate.outputs.contract-digest }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target "${{ matrix.rust_target }}"
+          source="target/${{ matrix.rust_target }}/release/${{ matrix.executable }}"
+          destination="release/${{ matrix.output_name }}"
+          test -s "$source"
+          mkdir -p release
+          cp "$source" "$destination"
+
+          version_output=$("$destination" --version)
+          grep --fixed-strings --line-regexp "gifgun-agent ${VERSION}" <<< "$version_output"
+          grep --fixed-strings --line-regexp "contract ${CONTRACT_DIGEST}" <<< "$version_output"
+      - name: Stage executable
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-${{ matrix.output_name }}
+          path: release/${{ matrix.output_name }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish GitHub release
+    needs: [validate, package-macos, package-portable]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Download staged executables
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: native-*
+          path: release
+          merge-multiple: true
+      - name: Verify staged executables
+        shell: bash
+        env:
+          CONTRACT_DIGEST: ${{ needs.validate.outputs.contract-digest }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          test -s release/gifgun-agent-darwin-arm64
+          test -s release/gifgun-agent-darwin-x64
+          test -s release/gifgun-agent-linux-x64
+          test -s release/gifgun-agent-windows-x64.exe
+
+          chmod +x release/gifgun-agent-linux-x64
+          version_output=$(release/gifgun-agent-linux-x64 --version)
+          grep --fixed-strings --line-regexp "gifgun-agent ${VERSION}" <<< "$version_output"
+          grep --fixed-strings --line-regexp "contract ${CONTRACT_DIGEST}" <<< "$version_output"
+      - name: Generate third-party license report
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-about --version 0.9.2 --locked --features cli
+          cargo about generate about.hbs --locked --fail \
+            --output-file release/THIRD_PARTY_LICENSES.html
+          cp LICENSE release/LICENSE.txt
+      - name: Create checksums and release manifest
+        shell: bash
+        env:
+          CONTRACT_DIGEST: ${{ needs.validate.outputs.contract-digest }}
+          SOURCE_COMMIT: ${{ needs.validate.outputs.source-commit }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          (
+            cd release
+            sha256sum \
+              gifgun-agent-darwin-arm64 \
+              gifgun-agent-darwin-x64 \
+              gifgun-agent-linux-x64 \
+              gifgun-agent-windows-x64.exe \
+              LICENSE.txt \
+              THIRD_PARTY_LICENSES.html > SHA256SUMS
+          )
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          release = Path("release")
+          names = {
+              "darwin-arm64": "gifgun-agent-darwin-arm64",
+              "darwin-x64": "gifgun-agent-darwin-x64",
+              "linux-x64": "gifgun-agent-linux-x64",
+              "windows-x64": "gifgun-agent-windows-x64.exe",
+          }
+          artifacts = {}
+          for target, name in names.items():
+              artifacts[target] = {
+                  "name": name,
+                  "sha256": hashlib.sha256((release / name).read_bytes()).hexdigest(),
+              }
+
+          manifest = {
+              "artifacts": artifacts,
+              "contractDigest": os.environ["CONTRACT_DIGEST"],
+              "formatVersion": 1,
+              "sourceCommit": os.environ["SOURCE_COMMIT"],
+              "version": os.environ["VERSION"],
+          }
+          (release / "release-manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - name: Publish release assets
+        shell: bash
+        env:
+          CONTRACT_DIGEST: ${{ needs.validate.outputs.contract-digest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_COMMIT: ${{ needs.validate.outputs.source-commit }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes=$(mktemp)
+          cat > "$notes" <<EOF
+          GifGun Online Agent ${VERSION}
+
+          Source commit: ${SOURCE_COMMIT}
+          Editor contract: ${CONTRACT_DIGEST}
+
+          These executable files are unsigned. Verify each SHA-256 checksum before use.
+          EOF
+          gh release create "$RELEASE_TAG" release/* \
+            --verify-tag \
+            --title "GifGun Online Agent ${VERSION}" \
+            --notes-file "$notes"

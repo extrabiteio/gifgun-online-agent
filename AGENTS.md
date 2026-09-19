@@ -40,4 +40,4 @@ Run platform checks when native lifecycle, process, file, or transport behavior 
 
 ## Releases
 
-Do not commit executable files. Publish only versioned executables built from a reviewed commit. Verify the native version and exact contract digest before publication.
+Do not commit executable files. Do not start the release workflow without approval to upload executables. Publish only versioned executables built from a reviewed commit. Verify the native version, source commit, exact contract digest, checksums, project license, and third-party license report before publication.

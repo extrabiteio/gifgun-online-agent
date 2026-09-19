@@ -25,7 +25,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 ```
 
-Test platform-specific behavior on each affected operating system.
+Test platform-specific behavior on each affected operating system. If dependencies change, regenerate and review the third-party license report as described in `docs/RELEASING.md`.
 
 ## Contract changes
 
