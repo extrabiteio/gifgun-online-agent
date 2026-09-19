@@ -6,7 +6,7 @@
       "target": "pairing",
       "value": {
         "compatibility": {
-          "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+          "contractDigest": "gifgun-editor-v1-13dd4303d2c9d20e",
           "protocol": {
             "major": 1,
             "minor": 0
@@ -26,7 +26,7 @@
       "value": {
         "arbitraryScript": "alert(document.cookie)",
         "compatibility": {
-          "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+          "contractDigest": "gifgun-editor-v1-13dd4303d2c9d20e",
           "protocol": {
             "major": 1,
             "minor": 0
@@ -45,7 +45,7 @@
       "target": "command",
       "value": {
         "capabilityId": "editor.set_mode",
-        "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+        "contractDigest": "gifgun-editor-v1-13dd4303d2c9d20e",
         "expectedRevision": 7,
         "input": {
           "mode": "advanced"
@@ -63,7 +63,7 @@
       "target": "command",
       "value": {
         "capabilityId": "missing.operation",
-        "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+        "contractDigest": "gifgun-editor-v1-13dd4303d2c9d20e",
         "expectedRevision": 7,
         "input": {
           "mode": "advanced"
@@ -81,7 +81,7 @@
       "target": "command",
       "value": {
         "capabilityId": "editor.set_mode",
-        "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+        "contractDigest": "gifgun-editor-v1-13dd4303d2c9d20e",
         "expectedRevision": 7,
         "input": {
           "mode": "advanced"
@@ -310,7 +310,7 @@
       "name": "compatibility accepts the current descriptor",
       "target": "compatibility",
       "value": {
-        "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+        "contractDigest": "gifgun-editor-v1-13dd4303d2c9d20e",
         "protocol": {
           "major": 1,
           "minor": 0
@@ -334,7 +334,7 @@
       "name": "compatibility rejects a different protocol",
       "target": "compatibility",
       "value": {
-        "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+        "contractDigest": "gifgun-editor-v1-13dd4303d2c9d20e",
         "protocol": {
           "major": 2,
           "minor": 0
@@ -342,6 +342,6 @@
       }
     }
   ],
-  "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+  "contractDigest": "gifgun-editor-v1-13dd4303d2c9d20e",
   "formatVersion": 1
 }
