@@ -56,7 +56,7 @@ Do not edit these files by hand. Update both files together from the matching Gi
 
 ## Releases
 
-This repository currently provides source code only. It does not publish executable files. See the [release process](docs/RELEASING.md) for the reviewed manual publication procedure.
+Versioned GitHub releases provide unsigned executables for Apple Silicon and Intel macOS, x64 Linux, and x64 Windows. Each release also provides checksums, a machine-readable manifest, the project license, and third-party license texts. See the [release process](docs/RELEASING.md) for the reviewed manual publication procedure.
 
 ## Contributing
 
