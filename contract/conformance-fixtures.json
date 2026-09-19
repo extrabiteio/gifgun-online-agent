@@ -1,0 +1,347 @@
+{
+  "cases": [
+    {
+      "accepted": true,
+      "name": "pairing accepts the current strict envelope",
+      "target": "pairing",
+      "value": {
+        "compatibility": {
+          "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+          "protocol": {
+            "major": 1,
+            "minor": 0
+          }
+        },
+        "expectedOrigin": "https://gifgun.test",
+        "expiresAt": 2000000000000,
+        "pairingToken": "synthetic-pairing-token-12345678901234567890",
+        "port": 43115,
+        "version": 1
+      }
+    },
+    {
+      "accepted": false,
+      "name": "pairing rejects an extra property",
+      "target": "pairing",
+      "value": {
+        "arbitraryScript": "alert(document.cookie)",
+        "compatibility": {
+          "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+          "protocol": {
+            "major": 1,
+            "minor": 0
+          }
+        },
+        "expectedOrigin": "https://gifgun.test",
+        "expiresAt": 2000000000000,
+        "pairingToken": "synthetic-pairing-token-12345678901234567890",
+        "port": 43115,
+        "version": 1
+      }
+    },
+    {
+      "accepted": true,
+      "name": "command accepts a registered capability input",
+      "target": "command",
+      "value": {
+        "capabilityId": "editor.set_mode",
+        "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+        "expectedRevision": 7,
+        "input": {
+          "mode": "advanced"
+        },
+        "protocol": {
+          "major": 1,
+          "minor": 0
+        },
+        "requestId": "fixture-request-1"
+      }
+    },
+    {
+      "accepted": false,
+      "name": "command rejects an unknown capability",
+      "target": "command",
+      "value": {
+        "capabilityId": "missing.operation",
+        "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+        "expectedRevision": 7,
+        "input": {
+          "mode": "advanced"
+        },
+        "protocol": {
+          "major": 1,
+          "minor": 0
+        },
+        "requestId": "fixture-request-1"
+      }
+    },
+    {
+      "accepted": false,
+      "name": "command rejects an extra envelope property",
+      "target": "command",
+      "value": {
+        "capabilityId": "editor.set_mode",
+        "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+        "expectedRevision": 7,
+        "input": {
+          "mode": "advanced"
+        },
+        "protocol": {
+          "major": 1,
+          "minor": 0
+        },
+        "requestId": "fixture-request-1",
+        "unexpected": true
+      }
+    },
+    {
+      "accepted": true,
+      "name": "result accepts a strict success envelope",
+      "target": "result",
+      "value": {
+        "ok": true,
+        "requestId": "fixture-request-1",
+        "result": {
+          "accepted": true
+        },
+        "revision": 8
+      }
+    },
+    {
+      "accepted": false,
+      "name": "result rejects an extra property",
+      "target": "result",
+      "value": {
+        "browserToken": "synthetic-secret",
+        "ok": true,
+        "requestId": "fixture-request-1",
+        "result": {
+          "accepted": true
+        },
+        "revision": 8
+      }
+    },
+    {
+      "accepted": true,
+      "capabilityId": "export.update_settings",
+      "name": "capability input accepts a valid union branch",
+      "target": "capability-input",
+      "value": {
+        "outputType": "gif",
+        "patch": {
+          "maxColors": 64
+        }
+      }
+    },
+    {
+      "accepted": false,
+      "capabilityId": "export.update_settings",
+      "name": "capability input rejects an invalid union branch",
+      "target": "capability-input",
+      "value": {
+        "outputType": "gif",
+        "patch": {
+          "maxColors": 63
+        }
+      }
+    },
+    {
+      "accepted": true,
+      "capabilityId": "layer.update_media",
+      "name": "capability input accepts bounded video layer audio",
+      "target": "capability-input",
+      "value": {
+        "layerId": "media-1",
+        "patch": {
+          "audioFadeIn": 1,
+          "audioFadeOut": 2,
+          "audioVolume": 0.5
+        }
+      }
+    },
+    {
+      "accepted": false,
+      "capabilityId": "layer.update_media",
+      "name": "capability input rejects video layer volume above one",
+      "target": "capability-input",
+      "value": {
+        "layerId": "media-1",
+        "patch": {
+          "audioVolume": 1.1
+        }
+      }
+    },
+    {
+      "accepted": true,
+      "capabilityId": "clip.set_audio_muted",
+      "name": "capability input accepts exact clip audio mute",
+      "target": "capability-input",
+      "value": {
+        "clipId": "clip-2",
+        "layerId": "media-1",
+        "muted": true
+      }
+    },
+    {
+      "accepted": false,
+      "capabilityId": "clip.set_audio_muted",
+      "name": "capability input rejects an extra clip audio field",
+      "target": "capability-input",
+      "value": {
+        "clipId": "clip-2",
+        "layerId": "media-1",
+        "muted": true,
+        "volume": 0
+      }
+    },
+    {
+      "accepted": true,
+      "capabilityId": "caption.generate_from_layer",
+      "name": "caption generation accepts automatic language detection",
+      "target": "capability-input",
+      "value": {
+        "language": "auto",
+        "layerId": "caption-1",
+        "replaceExisting": false,
+        "sourceLayerId": "media-1"
+      }
+    },
+    {
+      "accepted": true,
+      "capabilityId": "caption.generate_from_layer",
+      "name": "caption generation accepts a bounded spoken language",
+      "target": "capability-input",
+      "value": {
+        "language": "ru",
+        "layerId": "caption-1",
+        "replaceExisting": true,
+        "sourceLayerId": "media-1"
+      }
+    },
+    {
+      "accepted": false,
+      "capabilityId": "caption.generate_from_layer",
+      "name": "caption generation rejects a free-form language",
+      "target": "capability-input",
+      "value": {
+        "language": "russian",
+        "layerId": "caption-1",
+        "replaceExisting": false,
+        "sourceLayerId": "media-1"
+      }
+    },
+    {
+      "accepted": true,
+      "capabilityId": "capture.request_start",
+      "name": "capture request accepts an empty strict input",
+      "target": "capability-input",
+      "value": {}
+    },
+    {
+      "accepted": false,
+      "capabilityId": "capture.request_start",
+      "name": "capture request rejects source selection",
+      "target": "capability-input",
+      "value": {
+        "sourceId": "screen-1"
+      }
+    },
+    {
+      "accepted": true,
+      "capabilityId": "capture.request_camera",
+      "name": "camera capture request accepts an empty strict input",
+      "target": "capability-input",
+      "value": {}
+    },
+    {
+      "accepted": false,
+      "capabilityId": "capture.request_camera",
+      "name": "camera capture request rejects microphone selection",
+      "target": "capability-input",
+      "value": {
+        "microphone": true
+      }
+    },
+    {
+      "accepted": true,
+      "capabilityId": "capture.request_screen_camera",
+      "name": "combined capture request accepts an empty strict input",
+      "target": "capability-input",
+      "value": {}
+    },
+    {
+      "accepted": false,
+      "capabilityId": "capture.request_screen_camera",
+      "name": "combined capture request rejects layout control",
+      "target": "capability-input",
+      "value": {
+        "cameraPosition": "top-right"
+      }
+    },
+    {
+      "accepted": true,
+      "capabilityId": "capture.start_recording",
+      "name": "camera recording start accepts an empty strict input",
+      "target": "capability-input",
+      "value": {}
+    },
+    {
+      "accepted": true,
+      "capabilityId": "layer.reorder",
+      "name": "capability input accepts an integer lower bound",
+      "target": "capability-input",
+      "value": {
+        "layerId": "layer-1",
+        "stackPosition": 0
+      }
+    },
+    {
+      "accepted": false,
+      "capabilityId": "layer.reorder",
+      "name": "capability input rejects a fractional integer",
+      "target": "capability-input",
+      "value": {
+        "layerId": "layer-1",
+        "stackPosition": 0.5
+      }
+    },
+    {
+      "accepted": true,
+      "name": "compatibility accepts the current descriptor",
+      "target": "compatibility",
+      "value": {
+        "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+        "protocol": {
+          "major": 1,
+          "minor": 0
+        }
+      }
+    },
+    {
+      "accepted": false,
+      "name": "compatibility rejects a stale digest",
+      "target": "compatibility",
+      "value": {
+        "contractDigest": "stale-contract",
+        "protocol": {
+          "major": 1,
+          "minor": 0
+        }
+      }
+    },
+    {
+      "accepted": false,
+      "name": "compatibility rejects a different protocol",
+      "target": "compatibility",
+      "value": {
+        "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+        "protocol": {
+          "major": 2,
+          "minor": 0
+        }
+      }
+    }
+  ],
+  "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+  "formatVersion": 1
+}
