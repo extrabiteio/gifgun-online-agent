@@ -24,7 +24,7 @@ jobs:
       source-commit: ${{ steps.release.outputs.source-commit }}
       version: ${{ steps.release.outputs.version }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
           ref: ${{ inputs.tag }}
@@ -55,7 +55,7 @@ jobs:
     needs: validate
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.tag }}
       - name: Install Rust targets
@@ -118,7 +118,7 @@ jobs:
             output_name: gifgun-agent-windows-x64.exe
             rust_target: x86_64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.tag }}
       - name: Install Rust target
@@ -159,7 +159,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.tag }}
       - name: Download staged executables

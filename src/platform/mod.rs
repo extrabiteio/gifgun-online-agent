@@ -1,7 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command};
 
 #[cfg(unix)]
 mod unix;
@@ -50,17 +50,17 @@ pub fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
     fs::rename(source, destination)
 }
 
-pub fn configure_detached(command: &mut Command) {
-    configure_detached_process(command);
+pub fn spawn_detached(command: &mut Command) -> io::Result<Child> {
+    spawn_detached_process(command)
 }
 
 #[cfg(unix)]
 use unix::{
-    configure_detached_process, configure_private_file, set_private_dir_permissions,
-    set_private_file_permissions,
+    configure_private_file, set_private_dir_permissions, set_private_file_permissions,
+    spawn_detached_process,
 };
 #[cfg(windows)]
 use windows::{
-    configure_detached_process, configure_private_file, set_private_dir_permissions,
-    set_private_file_permissions,
+    configure_private_file, set_private_dir_permissions, set_private_file_permissions,
+    spawn_detached_process,
 };

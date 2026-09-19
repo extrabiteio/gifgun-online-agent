@@ -18,8 +18,7 @@ pub fn spawn_owned_process<S: AsRef<OsStr>>(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
-    platform::configure_detached(&mut command);
-    Ok(command.spawn()?)
+    Ok(platform::spawn_detached(&mut command)?)
 }
 
 pub fn start_bridge_process(
