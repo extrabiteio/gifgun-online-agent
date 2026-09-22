@@ -1129,6 +1129,19 @@
       }
     },
     {
+      "id": "layer.add_animation",
+      "input": {
+        "additionalProperties": false,
+        "properties": {
+          "atTime": {
+            "minimum": 0,
+            "type": "number"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
       "id": "layer.set_animation_source",
       "input": {
         "additionalProperties": false,
@@ -2237,7 +2250,7 @@
       }
     }
   ],
-  "contractDigest": "gifgun-editor-v1-6b7c81a45d91444b",
+  "contractDigest": "gifgun-editor-v1-963ccc2cdbdb29fa",
   "formatVersion": 1,
   "protocol": {
     "major": 1,
