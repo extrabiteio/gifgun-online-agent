@@ -1,6 +1,6 @@
 [package]
 name = "gifgun-agent"
-version = "1.29.0"
+version = "1.30.0"
 edition = "2024"
 rust-version = "1.90"
 description = "Native local bridge for GifGun Online"
