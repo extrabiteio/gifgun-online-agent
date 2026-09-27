@@ -2,11 +2,27 @@
   "cases": [
     {
       "accepted": true,
+      "capabilityId": "project.create_empty",
+      "name": "empty project creation accepts no input fields",
+      "target": "capability-input",
+      "value": {}
+    },
+    {
+      "accepted": false,
+      "capabilityId": "project.create_empty",
+      "name": "empty project creation rejects media and extra fields",
+      "target": "capability-input",
+      "value": {
+        "source": "synthetic-media"
+      }
+    },
+    {
+      "accepted": true,
       "name": "pairing accepts the current strict envelope",
       "target": "pairing",
       "value": {
         "compatibility": {
-          "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
+          "contractDigest": "gifgun-editor-v1-6a621cc1b23b6732",
           "protocol": {
             "major": 1,
             "minor": 0
@@ -26,7 +42,7 @@
       "value": {
         "arbitraryScript": "alert(document.cookie)",
         "compatibility": {
-          "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
+          "contractDigest": "gifgun-editor-v1-6a621cc1b23b6732",
           "protocol": {
             "major": 1,
             "minor": 0
@@ -45,7 +61,7 @@
       "target": "command",
       "value": {
         "capabilityId": "editor.set_mode",
-        "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
+        "contractDigest": "gifgun-editor-v1-6a621cc1b23b6732",
         "expectedRevision": 7,
         "input": {
           "mode": "advanced"
@@ -63,7 +79,7 @@
       "target": "command",
       "value": {
         "capabilityId": "missing.operation",
-        "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
+        "contractDigest": "gifgun-editor-v1-6a621cc1b23b6732",
         "expectedRevision": 7,
         "input": {
           "mode": "advanced"
@@ -81,7 +97,7 @@
       "target": "command",
       "value": {
         "capabilityId": "editor.set_mode",
-        "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
+        "contractDigest": "gifgun-editor-v1-6a621cc1b23b6732",
         "expectedRevision": 7,
         "input": {
           "mode": "advanced"
@@ -416,7 +432,7 @@
       "name": "compatibility accepts the current descriptor",
       "target": "compatibility",
       "value": {
-        "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
+        "contractDigest": "gifgun-editor-v1-6a621cc1b23b6732",
         "protocol": {
           "major": 1,
           "minor": 0
@@ -440,7 +456,7 @@
       "name": "compatibility rejects a different protocol",
       "target": "compatibility",
       "value": {
-        "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
+        "contractDigest": "gifgun-editor-v1-6a621cc1b23b6732",
         "protocol": {
           "major": 2,
           "minor": 0
@@ -448,6 +464,6 @@
       }
     }
   ],
-  "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
+  "contractDigest": "gifgun-editor-v1-6a621cc1b23b6732",
   "formatVersion": 1
 }
