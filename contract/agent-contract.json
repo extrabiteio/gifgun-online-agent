@@ -41,6 +41,14 @@
       }
     },
     {
+      "id": "project.create_empty",
+      "input": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    {
       "id": "project.load_source",
       "input": {
         "additionalProperties": false,
@@ -2364,7 +2372,7 @@
       }
     }
   ],
-  "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
+  "contractDigest": "gifgun-editor-v1-6a621cc1b23b6732",
   "formatVersion": 1,
   "protocol": {
     "major": 1,
