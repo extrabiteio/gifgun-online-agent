@@ -731,6 +731,120 @@
       }
     },
     {
+      "id": "caption.get_voiceover_options",
+      "input": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    {
+      "id": "caption.generate_voiceover",
+      "input": {
+        "additionalProperties": false,
+        "properties": {
+          "language": {
+            "anyOf": [
+              {
+                "const": "en",
+                "type": "string"
+              },
+              {
+                "const": "fr",
+                "type": "string"
+              },
+              {
+                "const": "de",
+                "type": "string"
+              },
+              {
+                "const": "it",
+                "type": "string"
+              },
+              {
+                "const": "pt",
+                "type": "string"
+              },
+              {
+                "const": "es",
+                "type": "string"
+              }
+            ]
+          },
+          "layerId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "replaceExisting": {
+            "type": "boolean"
+          },
+          "voiceId": {
+            "const": "alba",
+            "type": "string"
+          }
+        },
+        "required": [
+          "layerId",
+          "language",
+          "voiceId",
+          "replaceExisting"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "id": "caption.get_voiceover_status",
+      "input": {
+        "additionalProperties": false,
+        "properties": {
+          "layerId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "layerId"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "id": "caption.cancel_voiceover",
+      "input": {
+        "additionalProperties": false,
+        "properties": {
+          "layerId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "layerId"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "id": "caption.delete_voiceover",
+      "input": {
+        "additionalProperties": false,
+        "properties": {
+          "layerId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "layerId"
+        ],
+        "type": "object"
+      }
+    },
+    {
       "id": "caption.import_cues",
       "input": {
         "additionalProperties": false,
@@ -2250,7 +2364,7 @@
       }
     }
   ],
-  "contractDigest": "gifgun-editor-v1-d9cba6b6310c3c12",
+  "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
   "formatVersion": 1,
   "protocol": {
     "major": 1,
