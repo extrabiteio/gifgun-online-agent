@@ -6,7 +6,7 @@
       "target": "pairing",
       "value": {
         "compatibility": {
-          "contractDigest": "gifgun-editor-v1-d9cba6b6310c3c12",
+          "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
           "protocol": {
             "major": 1,
             "minor": 0
@@ -26,7 +26,7 @@
       "value": {
         "arbitraryScript": "alert(document.cookie)",
         "compatibility": {
-          "contractDigest": "gifgun-editor-v1-d9cba6b6310c3c12",
+          "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
           "protocol": {
             "major": 1,
             "minor": 0
@@ -45,7 +45,7 @@
       "target": "command",
       "value": {
         "capabilityId": "editor.set_mode",
-        "contractDigest": "gifgun-editor-v1-d9cba6b6310c3c12",
+        "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
         "expectedRevision": 7,
         "input": {
           "mode": "advanced"
@@ -63,7 +63,7 @@
       "target": "command",
       "value": {
         "capabilityId": "missing.operation",
-        "contractDigest": "gifgun-editor-v1-d9cba6b6310c3c12",
+        "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
         "expectedRevision": 7,
         "input": {
           "mode": "advanced"
@@ -81,7 +81,7 @@
       "target": "command",
       "value": {
         "capabilityId": "editor.set_mode",
-        "contractDigest": "gifgun-editor-v1-d9cba6b6310c3c12",
+        "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
         "expectedRevision": 7,
         "input": {
           "mode": "advanced"
@@ -232,6 +232,112 @@
     },
     {
       "accepted": true,
+      "capabilityId": "caption.generate_voiceover",
+      "name": "voiceover accepts an explicit language and built-in voice",
+      "target": "capability-input",
+      "value": {
+        "language": "en",
+        "layerId": "caption-1",
+        "replaceExisting": false,
+        "voiceId": "alba"
+      }
+    },
+    {
+      "accepted": true,
+      "capabilityId": "caption.generate_voiceover",
+      "name": "voiceover accepts explicit regeneration",
+      "target": "capability-input",
+      "value": {
+        "language": "es",
+        "layerId": "caption-1",
+        "replaceExisting": true,
+        "voiceId": "alba"
+      }
+    },
+    {
+      "accepted": false,
+      "capabilityId": "caption.generate_voiceover",
+      "name": "voiceover rejects automatic language detection",
+      "target": "capability-input",
+      "value": {
+        "language": "auto",
+        "layerId": "caption-1",
+        "replaceExisting": false,
+        "voiceId": "alba"
+      }
+    },
+    {
+      "accepted": false,
+      "capabilityId": "caption.generate_voiceover",
+      "name": "voiceover rejects an unsupported voice",
+      "target": "capability-input",
+      "value": {
+        "language": "en",
+        "layerId": "caption-1",
+        "replaceExisting": false,
+        "voiceId": "custom"
+      }
+    },
+    {
+      "accepted": false,
+      "capabilityId": "caption.generate_voiceover",
+      "name": "voiceover requires an explicit replacement choice",
+      "target": "capability-input",
+      "value": {
+        "language": "en",
+        "layerId": "caption-1",
+        "voiceId": "alba"
+      }
+    },
+    {
+      "accepted": false,
+      "capabilityId": "caption.generate_voiceover",
+      "name": "voiceover rejects extra input fields",
+      "target": "capability-input",
+      "value": {
+        "language": "en",
+        "layerId": "caption-1",
+        "model": "custom",
+        "replaceExisting": false,
+        "voiceId": "alba"
+      }
+    },
+    {
+      "accepted": true,
+      "capabilityId": "caption.get_voiceover_status",
+      "name": "caption.get_voiceover_status accepts a Caption track ID",
+      "target": "capability-input",
+      "value": {
+        "layerId": "caption-1"
+      }
+    },
+    {
+      "accepted": true,
+      "capabilityId": "caption.cancel_voiceover",
+      "name": "caption.cancel_voiceover accepts a Caption track ID",
+      "target": "capability-input",
+      "value": {
+        "layerId": "caption-1"
+      }
+    },
+    {
+      "accepted": true,
+      "capabilityId": "caption.delete_voiceover",
+      "name": "caption.delete_voiceover accepts a Caption track ID",
+      "target": "capability-input",
+      "value": {
+        "layerId": "caption-1"
+      }
+    },
+    {
+      "accepted": true,
+      "capabilityId": "caption.get_voiceover_options",
+      "name": "voiceover choices accept an empty strict input",
+      "target": "capability-input",
+      "value": {}
+    },
+    {
+      "accepted": true,
       "capabilityId": "capture.request_start",
       "name": "capture request accepts an empty strict input",
       "target": "capability-input",
@@ -310,7 +416,7 @@
       "name": "compatibility accepts the current descriptor",
       "target": "compatibility",
       "value": {
-        "contractDigest": "gifgun-editor-v1-d9cba6b6310c3c12",
+        "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
         "protocol": {
           "major": 1,
           "minor": 0
@@ -334,7 +440,7 @@
       "name": "compatibility rejects a different protocol",
       "target": "compatibility",
       "value": {
-        "contractDigest": "gifgun-editor-v1-d9cba6b6310c3c12",
+        "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
         "protocol": {
           "major": 2,
           "minor": 0
@@ -342,6 +448,6 @@
       }
     }
   ],
-  "contractDigest": "gifgun-editor-v1-d9cba6b6310c3c12",
+  "contractDigest": "gifgun-editor-v1-81fb39964a11dff6",
   "formatVersion": 1
 }
