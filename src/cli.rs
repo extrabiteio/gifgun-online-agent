@@ -19,12 +19,14 @@ use crate::session::{
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const STARTUP_POLL: Duration = Duration::from_millis(100);
 const RENDER_POLL: Duration = Duration::from_millis(500);
+const WORKFLOW_HELP: &str = "Efficient workflow:\n  1. Run 'capabilities --list' once.\n  2. Request full definitions only for capabilities needed by the task.\n  3. Run 'state --summary' before a coherent edit batch.\n  4. Use the returned revision for the first document command.\n  5. Chain the revision from each successful command.\n  6. Refresh state only after an external editor change or revision conflict.\n  7. Do not start the same asynchronous operation while it is active.\n  8. Use direct command diagnostics before other investigation.\n\nThe executable help, capability data, state, and errors are the complete runtime interface. Never inspect GifGun Online or GifGun Agent source code. If this interface is insufficient, report the missing runtime guidance.";
 
 #[derive(Debug, Parser)]
 #[command(
     name = "gifgun-agent",
     version,
-    about = "Private local bridge for GifGun Online"
+    about = "Private local bridge for GifGun Online",
+    after_help = WORKFLOW_HELP
 )]
 pub struct Arguments {
     #[arg(long, global = true)]
@@ -35,15 +37,43 @@ pub struct Arguments {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Pair with the open GifGun tab. Read the complete pairing instruction from stdin.
     Pair,
+    /// Show the current local bridge and browser connection state.
     Status,
-    Capabilities,
-    State,
+    /// Inspect browser capabilities. Use a bounded view unless complete output is required.
+    Capabilities {
+        /// Return operation identity, purpose, class, and preconditions without schemas.
+        #[arg(long, conflicts_with_all = ["id", "full"])]
+        list: bool,
+        /// Return the complete runtime definition for one capability. Repeat as required.
+        #[arg(long, value_name = "CAPABILITY", conflicts_with_all = ["list", "full"])]
+        id: Vec<String>,
+        /// Return every complete capability definition.
+        #[arg(long, conflicts_with_all = ["list", "id"])]
+        full: bool,
+    },
+    /// Inspect browser editor state. Use a bounded summary unless complete content is required.
+    State {
+        /// Omit animation source, cue text, media URLs, and other large layer content.
+        #[arg(long, conflicts_with = "full")]
+        summary: bool,
+        /// Return the complete projected editor state.
+        #[arg(long, conflicts_with = "summary")]
+        full: bool,
+    },
+    /// Run one capability. Read one capability input JSON value from stdin.
+    #[command(
+        after_help = "Document commands require --revision. Start a coherent edit batch with the revision from 'state --summary'. Chain the revision from each successful response into the next document command. Refresh state only after an external editor change or a revision conflict."
+    )]
     Call {
+        /// Runtime capability ID.
         capability: String,
+        /// Current editor revision for a document command.
         #[arg(long)]
         revision: Option<u64>,
     },
+    /// Transfer one local file to the browser for a bounded editor operation.
     Upload {
         path: PathBuf,
         #[arg(long, value_enum, default_value_t = UploadPurpose::Source)]
@@ -51,21 +81,28 @@ enum Command {
         #[arg(long)]
         layer: Option<String>,
     },
+    /// Start a render, wait for a terminal result, and optionally save it.
+    #[command(
+        after_help = "This command waits for a completed, failed, or canceled result. Do not start another render or issue separate render status calls while it is active."
+    )]
     Render {
         #[arg(long)]
         output: Option<PathBuf>,
         #[arg(long)]
         overwrite: bool,
     },
+    /// Save a completed render result.
     Save {
         path: PathBuf,
         #[arg(long)]
         overwrite: bool,
     },
+    /// Open or save a self-contained GifGun project file.
     Project {
         #[command(subcommand)]
         command: ProjectCommand,
     },
+    /// Stop the selected local bridge session and remove its local session record.
     Disconnect,
     #[command(hide = true)]
     Serve {
@@ -84,9 +121,15 @@ enum UploadPurpose {
 
 #[derive(Debug, Subcommand)]
 enum ProjectCommand {
-    Open {
-        path: PathBuf,
-    },
+    /// Open a project file and wait for a terminal result.
+    #[command(
+        after_help = "This command waits for a completed, failed, or canceled result. Do not start another project-file operation while it is active."
+    )]
+    Open { path: PathBuf },
+    /// Save a project file and wait for a terminal result.
+    #[command(
+        after_help = "This command waits for a completed, failed, or canceled result. Do not start another project-file operation while it is active."
+    )]
     Save {
         path: PathBuf,
         #[arg(long)]
@@ -113,23 +156,11 @@ async fn run_with(arguments: Arguments) -> AgentResult<()> {
         Command::Pair => pair().await,
         Command::Serve { startup } => serve(startup).await,
         Command::Status => status(arguments.session.as_deref()).await,
-        Command::Capabilities => {
-            invoke_selected(
-                arguments.session.as_deref(),
-                "editor.get_capabilities",
-                json!({}),
-                None,
-            )
-            .await
+        Command::Capabilities { list, id, full } => {
+            capabilities(arguments.session.as_deref(), list, &id, full).await
         }
-        Command::State => {
-            invoke_selected(
-                arguments.session.as_deref(),
-                "editor.get_state",
-                json!({}),
-                None,
-            )
-            .await
+        Command::State { summary, full } => {
+            state(arguments.session.as_deref(), summary, full).await
         }
         Command::Call {
             capability,
@@ -325,17 +356,220 @@ async fn status(selected: Option<&str>) -> AgentResult<()> {
     output(value)
 }
 
+async fn capabilities(
+    selected: Option<&str>,
+    list: bool,
+    ids: &[String],
+    full: bool,
+) -> AgentResult<()> {
+    let response =
+        invoke_selected_value(selected, "editor.get_capabilities", json!({}), None).await?;
+    let projected = if full || (!list && ids.is_empty()) {
+        response
+    } else if list {
+        capability_list(response)?
+    } else {
+        selected_capabilities(response, ids)?
+    };
+    output(projected)
+}
+
+async fn state(selected: Option<&str>, summary: bool, full: bool) -> AgentResult<()> {
+    let response = invoke_selected_value(selected, "editor.get_state", json!({}), None).await?;
+    let projected = if full || !summary {
+        response
+    } else {
+        state_summary(response)?
+    };
+    output(projected)
+}
+
+fn capability_list(mut response: Value) -> AgentResult<Value> {
+    if response.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Ok(response);
+    }
+    let capabilities = response
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            AgentError::Bridge("the browser capability response is incomplete".into())
+        })?;
+    let projected = capabilities
+        .iter()
+        .map(|capability| {
+            project_fields(
+                capability,
+                &[
+                    "id",
+                    "title",
+                    "description",
+                    "surface",
+                    "operationClass",
+                    "destructive",
+                    "affectedMode",
+                    "preconditions",
+                ],
+            )
+        })
+        .collect();
+    response["result"] = Value::Array(projected);
+    Ok(response)
+}
+
+fn selected_capabilities(mut response: Value, ids: &[String]) -> AgentResult<Value> {
+    if response.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Ok(response);
+    }
+    let capabilities = response
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            AgentError::Bridge("the browser capability response is incomplete".into())
+        })?;
+    let mut selected = Vec::with_capacity(ids.len());
+    for id in ids {
+        let capability = capabilities
+            .iter()
+            .find(|capability| capability.get("id").and_then(Value::as_str) == Some(id))
+            .ok_or_else(|| {
+                AgentError::Cli(format!(
+                    "the connected editor does not report capability {id}"
+                ))
+            })?;
+        selected.push(capability.clone());
+    }
+    response["result"] = Value::Array(selected);
+    Ok(response)
+}
+
+fn state_summary(mut response: Value) -> AgentResult<Value> {
+    if response.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Ok(response);
+    }
+    let state = response
+        .get("result")
+        .ok_or_else(|| AgentError::Bridge("the browser state response is incomplete".into()))?;
+    let scene = state
+        .pointer("/advanced/scene")
+        .ok_or_else(|| AgentError::Bridge("the browser state response is incomplete".into()))?;
+    let layers = scene
+        .get("layers")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AgentError::Bridge("the browser state response is incomplete".into()))?
+        .iter()
+        .map(layer_summary)
+        .collect();
+
+    let mut scene_summary = project_fields(scene, &["version", "canvas", "timeline"]);
+    scene_summary["layers"] = Value::Array(layers);
+
+    let advanced = state
+        .get("advanced")
+        .ok_or_else(|| AgentError::Bridge("the browser state response is incomplete".into()))?;
+    let mut advanced_summary = project_fields(advanced, &["personCutoutReadiness"]);
+    advanced_summary["scene"] = scene_summary;
+
+    let mut summary = project_fields(
+        state,
+        &[
+            "contractDigest",
+            "revision",
+            "revisionEpoch",
+            "mode",
+            "readiness",
+            "basic",
+            "export",
+            "preview",
+            "render",
+            "history",
+        ],
+    );
+    if let Some(source) = state.get("source") {
+        summary["source"] = if source.is_null() {
+            Value::Null
+        } else {
+            project_fields(
+                source,
+                &[
+                    "id", "name", "type", "size", "duration", "fps", "width", "height", "restored",
+                ],
+            )
+        };
+    }
+    summary["advanced"] = advanced_summary;
+    response["result"] = summary;
+    Ok(response)
+}
+
+fn layer_summary(layer: &Value) -> Value {
+    let mut summary = project_fields(
+        layer,
+        &[
+            "id", "type", "name", "visible", "locked", "start", "end", "x", "y", "width", "height",
+            "rotation", "opacity",
+        ],
+    );
+    match layer.get("type").and_then(Value::as_str) {
+        Some("animation") => {
+            summary["sourceBytes"] = json!({
+                "html": layer.get("html").and_then(Value::as_str).map_or(0, str::len),
+                "css": layer.get("css").and_then(Value::as_str).map_or(0, str::len),
+                "javascript": layer.get("javascript").and_then(Value::as_str).map_or(0, str::len),
+            });
+        }
+        Some("caption") => {
+            summary["cueCount"] = json!(
+                layer
+                    .get("cues")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len)
+            );
+        }
+        Some("media") => {
+            for field in ["mediaName", "mediaType", "mediaDuration", "muted"] {
+                if let Some(value) = layer.get(field) {
+                    summary[field] = value.clone();
+                }
+            }
+            if let Some(clips) = layer.get("clips").and_then(Value::as_array) {
+                summary["clipCount"] = json!(clips.len());
+            }
+        }
+        _ => {}
+    }
+    summary
+}
+
+fn project_fields(value: &Value, fields: &[&str]) -> Value {
+    let mut projected = serde_json::Map::new();
+    for field in fields {
+        if let Some(field_value) = value.get(*field) {
+            projected.insert((*field).to_owned(), field_value.clone());
+        }
+    }
+    Value::Object(projected)
+}
+
 async fn invoke_selected(
     selected: Option<&str>,
     capability_id: &str,
     input: Value,
     expected_revision: Option<u64>,
 ) -> AgentResult<()> {
+    output(invoke_selected_value(selected, capability_id, input, expected_revision).await?)
+}
+
+async fn invoke_selected_value(
+    selected: Option<&str>,
+    capability_id: &str,
+    input: Value,
+    expected_revision: Option<u64>,
+) -> AgentResult<Value> {
     let store = SessionStore::discover()?;
     let session = store.read_session(selected)?;
     let client = AgentClient::new(session)?;
     let contract = NativeContract::load_embedded()?;
-    output(send_command(&client, &contract, capability_id, input, expected_revision).await?)
+    send_command(&client, &contract, capability_id, input, expected_revision).await
 }
 
 async fn send_command(
@@ -656,4 +890,142 @@ fn now_millis() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capability_list_omits_schemas_and_selection_keeps_requested_definitions() {
+        let response = json!({
+            "ok": true,
+            "requestId": "request-1",
+            "revision": 7,
+            "result": [
+                {
+                    "id": "editor.get_state",
+                    "title": "Inspect editor state",
+                    "description": "Read editor state.",
+                    "surface": "editor",
+                    "operationClass": "query",
+                    "history": "none",
+                    "parity": "agent",
+                    "preconditions": [],
+                    "inputSchema": {"type": "object"},
+                    "resultSchema": {"type": "object"}
+                },
+                {
+                    "id": "layer.add_animation",
+                    "title": "Add Animation layer",
+                    "description": "Add one Animation layer.",
+                    "surface": "layer",
+                    "operationClass": "document",
+                    "history": "record",
+                    "parity": "agent",
+                    "affectedMode": "advanced",
+                    "preconditions": ["project_hydrated"],
+                    "inputSchema": {"type": "object"},
+                    "resultSchema": {"type": "object"}
+                }
+            ]
+        });
+
+        let listed = capability_list(response.clone()).unwrap();
+        assert_eq!(listed["revision"], 7);
+        assert_eq!(listed["result"][0]["id"], "editor.get_state");
+        assert!(listed["result"][0].get("inputSchema").is_none());
+        assert!(listed["result"][0].get("resultSchema").is_none());
+        assert_eq!(listed["result"][1]["affectedMode"], "advanced");
+
+        let selected =
+            selected_capabilities(response, &["layer.add_animation".to_owned()]).unwrap();
+        assert_eq!(selected["result"].as_array().unwrap().len(), 1);
+        assert_eq!(selected["result"][0]["id"], "layer.add_animation");
+        assert_eq!(selected["result"][0]["inputSchema"]["type"], "object");
+    }
+
+    #[test]
+    fn state_summary_omits_large_content_and_reports_measured_layer_facts() {
+        let response = json!({
+            "ok": true,
+            "requestId": "request-2",
+            "revision": 11,
+            "result": {
+                "contractDigest": "digest",
+                "revision": 11,
+                "revisionEpoch": "epoch",
+                "mode": "advanced",
+                "readiness": {
+                    "projectHydrated": true,
+                    "sourceReady": false,
+                    "projectReady": true,
+                    "mediaValidationPending": false
+                },
+                "basic": {},
+                "advanced": {
+                    "personCutoutReadiness": [],
+                    "scene": {
+                        "version": 1,
+                        "canvas": {"width": 1280, "height": 720},
+                        "timeline": {"duration": 30, "workArea": {"start": 0, "end": 30}},
+                        "layers": [
+                            {
+                                "id": "animation-1",
+                                "type": "animation",
+                                "name": "Motion",
+                                "visible": true,
+                                "locked": false,
+                                "start": 0,
+                                "end": 30,
+                                "x": 0,
+                                "y": 0,
+                                "width": 100,
+                                "height": 100,
+                                "rotation": 0,
+                                "opacity": 1,
+                                "html": "<canvas></canvas>",
+                                "css": "canvas{}",
+                                "javascript": "window.gifgunAnimation.register({});"
+                            },
+                            {
+                                "id": "caption-1",
+                                "type": "caption",
+                                "name": "Captions",
+                                "visible": true,
+                                "locked": false,
+                                "start": 0,
+                                "end": 30,
+                                "x": 0,
+                                "y": 80,
+                                "width": 100,
+                                "height": 10,
+                                "rotation": 0,
+                                "opacity": 1,
+                                "cues": [
+                                    {"id": "cue-1", "start": 0, "end": 1, "text": "Private text"}
+                                ],
+                                "style": {}
+                            }
+                        ]
+                    }
+                },
+                "export": {"settings": {"selectedOutputType": "mp4"}, "paletteMode": null},
+                "preview": {"currentTime": 0, "playing": false},
+                "render": {"status": "idle", "progress": 0},
+                "history": {"canUndo": false}
+            }
+        });
+
+        let summary = state_summary(response).unwrap();
+        assert_eq!(summary["result"]["revision"], 11);
+        let layers = summary["result"]["advanced"]["scene"]["layers"]
+            .as_array()
+            .unwrap();
+        assert_eq!(layers[0]["sourceBytes"]["html"], 17);
+        assert!(layers[0].get("html").is_none());
+        assert!(layers[0].get("javascript").is_none());
+        assert_eq!(layers[1]["cueCount"], 1);
+        assert!(layers[1].get("cues").is_none());
+    }
 }

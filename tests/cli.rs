@@ -48,11 +48,42 @@ fn reports_version_and_rejects_malformed_pairing_without_echoing_input() {
     assert!(version.contains(concat!("gifgun-agent ", env!("CARGO_PKG_VERSION"))));
     assert!(version.contains(NativeContract::load_embedded().unwrap().digest()));
 
-    let help = run_cli(&["project", "--help"], directory.path(), "");
+    let help = run_cli(&["--help"], directory.path(), "");
     assert!(help.status.success());
     let help = String::from_utf8_lossy(&help.stdout);
-    assert!(help.contains("open"));
-    assert!(help.contains("save"));
+    assert!(help.contains("capabilities --list"));
+    assert!(help.contains("state --summary"));
+    assert!(help.contains("Never inspect GifGun Online or GifGun Agent source code."));
+
+    let capabilities_help = run_cli(&["capabilities", "--help"], directory.path(), "");
+    assert!(capabilities_help.status.success());
+    let capabilities_help = String::from_utf8_lossy(&capabilities_help.stdout);
+    assert!(capabilities_help.contains("--list"));
+    assert!(capabilities_help.contains("--id <CAPABILITY>"));
+    assert!(capabilities_help.contains("--full"));
+
+    let state_help = run_cli(&["state", "--help"], directory.path(), "");
+    assert!(state_help.status.success());
+    let state_help = String::from_utf8_lossy(&state_help.stdout);
+    assert!(state_help.contains("--summary"));
+    assert!(state_help.contains("--full"));
+
+    let call_help = run_cli(&["call", "--help"], directory.path(), "");
+    assert!(call_help.status.success());
+    let call_help = String::from_utf8_lossy(&call_help.stdout);
+    assert!(call_help.contains("Read one capability input JSON value from stdin"));
+    assert!(call_help.contains("Chain"));
+
+    let render_help = run_cli(&["render", "--help"], directory.path(), "");
+    assert!(render_help.status.success());
+    let render_help = String::from_utf8_lossy(&render_help.stdout);
+    assert!(render_help.contains("Do not start another render"));
+
+    let project_help = run_cli(&["project", "--help"], directory.path(), "");
+    assert!(project_help.status.success());
+    let project_help = String::from_utf8_lossy(&project_help.stdout);
+    assert!(project_help.contains("open"));
+    assert!(project_help.contains("save"));
 
     let malformed = run_cli(&["pair"], directory.path(), "private-malformed-token\n");
     assert!(!malformed.status.success());
