@@ -2,7 +2,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::TryStreamExt;
 use gifgun_agent::contract::{NativeContract, PairingEnvelope};
-use gifgun_agent::server::{BridgeServerOptions, GifGunBridgeServer};
+use gifgun_agent::server::{BridgeServerOptions, GifGunBridgeServer, PairingSetup};
 use gifgun_agent::session::Secret;
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
@@ -16,14 +16,14 @@ const AGENT_TOKEN: &str = "agent-token-that-is-long-enough-123456789012";
 async fn start() -> GifGunBridgeServer {
     let contract = NativeContract::load_embedded().unwrap();
     GifGunBridgeServer::start(BridgeServerOptions {
-        envelope: PairingEnvelope {
+        pairing: PairingSetup::Instruction(PairingEnvelope {
             version: 1,
             port: 43_115,
             pairing_token: Secret::new(PAIRING_TOKEN.to_owned()),
             expected_origin: ORIGIN.to_owned(),
             expires_at: u64::MAX,
             compatibility: contract.compatibility(),
-        },
+        }),
         agent_token: Secret::new(AGENT_TOKEN.to_owned()),
         session_id: "session-test".to_owned(),
         port: 0,
@@ -32,6 +32,97 @@ async fn start() -> GifGunBridgeServer {
     })
     .await
     .unwrap()
+}
+
+#[tokio::test]
+async fn managed_launch_binds_one_workspace_and_still_requires_browser_approval() {
+    let mut options = BridgeServerOptions::for_test(0, ORIGIN, PAIRING_TOKEN, AGENT_TOKEN);
+    options.pairing = PairingSetup::Launch {
+        expected_origin: ORIGIN.to_owned(),
+        workspace_id: "workspace-owned".to_owned(),
+    };
+    let server = GifGunBridgeServer::start(options).await.unwrap();
+    let client = Client::new();
+    let url = server.url("/v1/launch/session-test/workspace-owned/pair");
+    let envelope = json!({ "version": 1, "port": server.address().port(), "pairingToken": PAIRING_TOKEN, "expectedOrigin": ORIGIN, "expiresAt": u64::MAX, "compatibility": NativeContract::load_embedded().unwrap().compatibility() });
+    let before = browser_request(
+        &client,
+        reqwest::Method::GET,
+        server.url("/v1/pair/status"),
+        PAIRING_TOKEN,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(before.status(), StatusCode::UNAUTHORIZED);
+    let wrong_origin = client
+        .post(&url)
+        .header("Origin", "https://other.test")
+        .json(&envelope)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong_origin.status(), StatusCode::FORBIDDEN);
+    let wrong_workspace = client
+        .post(server.url("/v1/launch/session-test/workspace-other/pair"))
+        .header("Origin", ORIGIN)
+        .json(&envelope)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong_workspace.status(), StatusCode::NOT_FOUND);
+    let mut incompatible = envelope.clone();
+    incompatible["compatibility"]["contractDigest"] = json!("stale-contract");
+    let incompatible = client
+        .post(&url)
+        .header("Origin", ORIGIN)
+        .json(&incompatible)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(incompatible.status(), StatusCode::CONFLICT);
+    for _ in 0..2 {
+        let accepted = client
+            .post(&url)
+            .header("Origin", ORIGIN)
+            .json(&envelope)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), StatusCode::OK);
+        assert_eq!(
+            accepted.json::<Value>().await.unwrap(),
+            json!({"accepted": true})
+        );
+    }
+    let mut different = envelope.clone();
+    different["pairingToken"] = json!("another-synthetic-pairing-token-1234567890");
+    let other = client
+        .post(&url)
+        .header("Origin", ORIGIN)
+        .json(&different)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(other.status(), StatusCode::CONFLICT);
+    let unapproved = client
+        .post(server.url("/v1/agent/transfers/upload"))
+        .bearer_auth(AGENT_TOKEN)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unapproved.status(), StatusCode::CONFLICT);
+    approve(&server, &client).await;
+    let consumed = client
+        .post(&url)
+        .header("Origin", ORIGIN)
+        .json(&envelope)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(consumed.status(), StatusCode::CONFLICT);
+    server.close().await.unwrap();
 }
 
 fn browser_request(
@@ -342,8 +433,11 @@ async fn rejects_incompatible_approval_invalid_commands_and_unanswered_timeouts(
     server.close().await.unwrap();
 
     let mut stale_options = BridgeServerOptions::for_test(0, ORIGIN, PAIRING_TOKEN, AGENT_TOKEN);
-    stale_options.envelope.compatibility.contract_digest = "stale-contract".to_owned();
-    stale_options.envelope.expires_at = u64::MAX;
+    let PairingSetup::Instruction(envelope) = &mut stale_options.pairing else {
+        panic!("instruction fixture")
+    };
+    envelope.compatibility.contract_digest = "stale-contract".to_owned();
+    envelope.expires_at = u64::MAX;
     server = GifGunBridgeServer::start(stale_options).await.unwrap();
     let status = browser_request(
         &client,
@@ -384,7 +478,10 @@ async fn rejects_incompatible_approval_invalid_commands_and_unanswered_timeouts(
 #[tokio::test]
 async fn pairing_and_established_sessions_expire_and_stop_the_bridge() {
     let mut pairing_options = BridgeServerOptions::for_test(0, ORIGIN, PAIRING_TOKEN, AGENT_TOKEN);
-    pairing_options.envelope.expires_at = now_millis() + 250;
+    let PairingSetup::Instruction(envelope) = &mut pairing_options.pairing else {
+        panic!("instruction fixture")
+    };
+    envelope.expires_at = now_millis() + 250;
     let pairing_server = GifGunBridgeServer::start(pairing_options).await.unwrap();
     tokio::time::timeout(Duration::from_secs(1), pairing_server.wait())
         .await
@@ -392,7 +489,10 @@ async fn pairing_and_established_sessions_expire_and_stop_the_bridge() {
         .unwrap();
 
     let mut session_options = BridgeServerOptions::for_test(0, ORIGIN, PAIRING_TOKEN, AGENT_TOKEN);
-    session_options.envelope.expires_at = u64::MAX;
+    let PairingSetup::Instruction(envelope) = &mut session_options.pairing else {
+        panic!("instruction fixture")
+    };
+    envelope.expires_at = u64::MAX;
     session_options.session_expires_at = now_millis() + 500;
     let session_server = GifGunBridgeServer::start(session_options).await.unwrap();
     let client = Client::new();

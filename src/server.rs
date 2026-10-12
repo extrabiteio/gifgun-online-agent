@@ -29,7 +29,7 @@ use url::Url;
 
 use crate::contract::{Compatibility, NativeContract, PairingEnvelope};
 use crate::error::{AgentError, AgentResult};
-use crate::session::{Secret, random_secret, secrets_equal};
+use crate::session::{Secret, ensure_session_id, random_secret, secrets_equal};
 use crate::transfers::TransferManager;
 
 const MAX_JSON_BYTES: usize = 256 * 1024;
@@ -63,6 +63,7 @@ struct PendingCommand {
 struct BridgeInner {
     status: BridgeStatus,
     pairing_token: Option<Secret>,
+    launch_claimed: bool,
     browser_token: Option<Secret>,
     browser_stream: Option<BrowserStream>,
     pending: HashMap<String, PendingCommand>,
@@ -76,7 +77,9 @@ struct BridgeState {
     compatibility: Compatibility,
     agent_token: Secret,
     session_id: String,
-    pairing_expires_at: u64,
+    pairing_expires_at: watch::Sender<Option<u64>>,
+    workspace_id: Option<String>,
+    port: u16,
     session_expires_at: u64,
     command_timeout: Duration,
     inner: Mutex<BridgeInner>,
@@ -126,8 +129,16 @@ impl BridgeState {
     }
 }
 
+pub enum PairingSetup {
+    Instruction(PairingEnvelope),
+    Launch {
+        expected_origin: String,
+        workspace_id: String,
+    },
+}
+
 pub struct BridgeServerOptions {
-    pub envelope: PairingEnvelope,
+    pub pairing: PairingSetup,
     pub agent_token: Secret,
     pub session_id: String,
     pub port: u16,
@@ -140,14 +151,14 @@ impl BridgeServerOptions {
     pub fn for_test(port: u16, origin: &str, pairing_token: &str, agent_token: &str) -> Self {
         let contract = NativeContract::load_embedded().expect("embedded contract");
         Self {
-            envelope: PairingEnvelope {
+            pairing: PairingSetup::Instruction(PairingEnvelope {
                 version: 1,
                 port: if port == 0 { 43_115 } else { port },
                 pairing_token: Secret::new(pairing_token.to_owned()),
                 expected_origin: origin.to_owned(),
                 expires_at: now_millis().saturating_add(60_000),
                 compatibility: contract.compatibility(),
-            },
+            }),
             agent_token: Secret::new(agent_token.to_owned()),
             session_id: "session-test".to_owned(),
             port,
@@ -182,34 +193,60 @@ pub struct GifGunBridgeServer {
 impl GifGunBridgeServer {
     pub async fn start(options: BridgeServerOptions) -> AgentResult<Self> {
         let contract = Arc::new(NativeContract::load_embedded()?);
-        let envelope_value = serde_json::to_value(&options.envelope)
-            .map_err(|error| AgentError::State(format!("pairing envelope is invalid: {error}")))?;
-        contract.validate_pairing(&envelope_value).map_err(|_| {
-            AgentError::State("pairing envelope does not match the contract".into())
-        })?;
-        let parsed_origin = Url::parse(&options.envelope.expected_origin)
+        ensure_session_id(&options.session_id)?;
+        let (expected_origin, pairing_token, pairing_expiry, workspace_id, status) =
+            match options.pairing {
+                PairingSetup::Instruction(envelope) => {
+                    let value = serde_json::to_value(&envelope)
+                        .map_err(|_| AgentError::State("pairing envelope is invalid".into()))?;
+                    contract.validate_pairing(&value).map_err(|_| {
+                        AgentError::State("pairing envelope does not match the contract".into())
+                    })?;
+                    if envelope.expires_at <= now_millis() {
+                        return Err(AgentError::State("pairing instruction has expired".into()));
+                    }
+                    let status = if contract
+                        .check_compatibility(&envelope.compatibility)
+                        .is_ok()
+                    {
+                        BridgeStatus::Waiting
+                    } else {
+                        BridgeStatus::Incompatible
+                    };
+                    (
+                        envelope.expected_origin,
+                        Some(envelope.pairing_token),
+                        Some(envelope.expires_at),
+                        None,
+                        status,
+                    )
+                }
+                PairingSetup::Launch {
+                    expected_origin,
+                    workspace_id,
+                } => {
+                    ensure_session_id(&workspace_id)?;
+                    (
+                        expected_origin,
+                        None,
+                        None,
+                        Some(workspace_id),
+                        BridgeStatus::Waiting,
+                    )
+                }
+            };
+        let parsed_origin = Url::parse(&expected_origin)
             .map_err(|_| AgentError::State("expected browser origin is invalid".into()))?;
         if !matches!(parsed_origin.scheme(), "http" | "https")
-            || parsed_origin.origin().ascii_serialization() != options.envelope.expected_origin
+            || parsed_origin.origin().ascii_serialization() != expected_origin
         {
             return Err(AgentError::State(
                 "expected browser origin must be an HTTP origin without a path".into(),
             ));
         }
-        if options.envelope.expires_at <= now_millis() {
-            return Err(AgentError::State("pairing instruction has expired".into()));
-        }
         if options.session_expires_at <= now_millis() {
             return Err(AgentError::State("agent session has expired".into()));
         }
-        let status = if contract
-            .check_compatibility(&options.envelope.compatibility)
-            .is_ok()
-        {
-            BridgeStatus::Waiting
-        } else {
-            BridgeStatus::Incompatible
-        };
         let listener = TcpListener::bind(("127.0.0.1", options.port)).await?;
         let address = listener.local_addr()?;
         if !address.ip().is_ipv4() || !address.ip().is_loopback() {
@@ -218,13 +255,16 @@ impl GifGunBridgeServer {
             ));
         }
         let (shutdown, mut shutdown_receiver) = watch::channel(false);
+        let (pairing_expires_at, _) = watch::channel(pairing_expiry);
         let state = Arc::new(BridgeState {
             contract: Arc::clone(&contract),
-            expected_origin: options.envelope.expected_origin,
+            expected_origin,
             compatibility: contract.compatibility(),
             agent_token: options.agent_token,
             session_id: options.session_id,
-            pairing_expires_at: options.envelope.expires_at,
+            pairing_expires_at,
+            workspace_id,
+            port: address.port(),
             session_expires_at: options.session_expires_at,
             command_timeout: if options.command_timeout.is_zero() {
                 DEFAULT_COMMAND_TIMEOUT
@@ -233,7 +273,8 @@ impl GifGunBridgeServer {
             },
             inner: Mutex::new(BridgeInner {
                 status,
-                pairing_token: Some(options.envelope.pairing_token),
+                pairing_token,
+                launch_claimed: false,
                 browser_token: None,
                 browser_stream: None,
                 pending: HashMap::new(),
@@ -302,6 +343,10 @@ impl GifGunBridgeServer {
 
 fn router(state: Arc<BridgeState>) -> Router {
     Router::new()
+        .route(
+            "/v1/launch/{session_id}/{workspace_id}/pair",
+            post(launch_pair).options(browser_preflight),
+        )
         .route(
             "/v1/pair/status",
             get(pair_status).options(browser_preflight),
@@ -375,6 +420,103 @@ async fn browser_preflight(State(state): State<Arc<BridgeState>>, headers: Heade
     empty_browser_response(&state, StatusCode::NO_CONTENT)
 }
 
+async fn launch_pair(
+    State(state): State<Arc<BridgeState>>,
+    Path((session_id, workspace_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if !has_browser_origin(&state, &headers) {
+        return json_response(
+            &state,
+            StatusCode::FORBIDDEN,
+            json!({"error": "origin_not_allowed"}),
+            false,
+        );
+    }
+    if state.session_id != session_id
+        || state.workspace_id.as_deref() != Some(workspace_id.as_str())
+    {
+        return json_response(
+            &state,
+            StatusCode::NOT_FOUND,
+            json!({"error": "launch_not_found"}),
+            true,
+        );
+    }
+    let value = match read_json(&headers, body).await {
+        Ok(value) => value,
+        Err(message) => return invalid_request(&state, message, true),
+    };
+    if state.contract.validate_pairing(&value).is_err() {
+        return invalid_request(&state, "pairing envelope does not match the contract", true);
+    }
+    let Ok(envelope) = serde_json::from_value::<PairingEnvelope>(value) else {
+        return invalid_request(&state, "pairing envelope is invalid", true);
+    };
+    if envelope.port != state.port
+        || envelope.expected_origin != state.expected_origin
+        || envelope.expires_at <= now_millis()
+        || envelope.expires_at > state.session_expires_at
+    {
+        return invalid_request(&state, "pairing envelope does not match this launch", true);
+    }
+    if state
+        .contract
+        .check_compatibility(&envelope.compatibility)
+        .is_err()
+    {
+        return json_response(
+            &state,
+            StatusCode::CONFLICT,
+            json!({"error": "incompatible_contract"}),
+            true,
+        );
+    }
+    let mut inner = state.inner.lock().await;
+    if !matches!(
+        inner.status,
+        BridgeStatus::Waiting | BridgeStatus::ApprovalPending
+    ) {
+        return json_response(
+            &state,
+            StatusCode::CONFLICT,
+            json!({"error": "launch_closed"}),
+            true,
+        );
+    }
+    if envelope.expires_at <= now_millis() {
+        return invalid_request(&state, "pairing instruction has expired", true);
+    }
+    if inner.launch_claimed {
+        let same = secrets_equal(
+            inner.pairing_token.as_ref().map(Secret::expose),
+            Some(envelope.pairing_token.expose()),
+        ) && *state.pairing_expires_at.borrow() == Some(envelope.expires_at);
+        return json_response(
+            &state,
+            if same {
+                StatusCode::OK
+            } else {
+                StatusCode::CONFLICT
+            },
+            if same {
+                json!({"accepted": true})
+            } else {
+                json!({"error": "launch_already_claimed"})
+            },
+            true,
+        );
+    }
+    inner.launch_claimed = true;
+    inner.pairing_token = Some(envelope.pairing_token);
+    state
+        .pairing_expires_at
+        .send_replace(Some(envelope.expires_at));
+    drop(inner);
+    json_response(&state, StatusCode::OK, json!({"accepted": true}), true)
+}
+
 async fn pair_status(State(state): State<Arc<BridgeState>>, headers: HeaderMap) -> Response {
     if let Some(response) = authorize_browser_pairing(&state, &headers).await {
         return response;
@@ -437,7 +579,12 @@ async fn pair_approve(
         Err(_) => return invalid_request(&state, "browser credential unavailable", true),
     };
     let mut inner = state.inner.lock().await;
-    if !has_token(&headers, inner.pairing_token.as_ref()) {
+    if state
+        .pairing_expires_at
+        .borrow()
+        .is_some_and(|expiry| expiry <= now_millis())
+        || !has_token(&headers, inner.pairing_token.as_ref())
+    {
         return json_response(
             &state,
             StatusCode::UNAUTHORIZED,
@@ -448,6 +595,7 @@ async fn pair_approve(
     inner.browser_token = Some(browser_token.clone());
     inner.pairing_token = None;
     inner.status = BridgeStatus::Connected;
+    state.pairing_expires_at.send_replace(None);
     drop(inner);
     json_response(
         &state,
@@ -642,6 +790,7 @@ async fn agent_status(State(state): State<Arc<BridgeState>>, headers: HeaderMap)
         StatusCode::OK,
         json!({
             "sessionId": state.session_id,
+            "workspaceId": state.workspace_id,
             "status": status,
             "browserConnected": state.browser_connected().await,
             "compatibility": state.compatibility,
@@ -846,7 +995,12 @@ async fn authorize_browser_pairing(
         ));
     }
     let inner = state.inner.lock().await;
-    if !has_token(headers, inner.pairing_token.as_ref()) {
+    if state
+        .pairing_expires_at
+        .borrow()
+        .is_some_and(|expiry| expiry <= now_millis())
+        || !has_token(headers, inner.pairing_token.as_ref())
+    {
         return Some(json_response(
             state,
             StatusCode::UNAUTHORIZED,
@@ -1027,28 +1181,36 @@ fn spawn_heartbeat(state: Arc<BridgeState>) {
     });
 }
 
+async fn wait_for_expiry(expires_at: Option<u64>) {
+    match expires_at {
+        Some(expiry) if expiry != u64::MAX => {
+            tokio::time::sleep(Duration::from_millis(expiry.saturating_sub(now_millis()))).await
+        }
+        _ => std::future::pending::<()>().await,
+    }
+}
+
 fn spawn_expiry(state: Arc<BridgeState>) {
     tokio::spawn(async move {
-        if state.pairing_expires_at != u64::MAX {
-            let wait = Duration::from_millis(state.pairing_expires_at.saturating_sub(now_millis()));
-            tokio::time::sleep(wait).await;
-            let should_expire = matches!(
-                state.inner.lock().await.status,
-                BridgeStatus::Waiting | BridgeStatus::ApprovalPending | BridgeStatus::Incompatible
-            );
-            if should_expire {
-                state
-                    .shutdown(BridgeStatus::Expired, "Pairing instruction expired.")
-                    .await;
+        let mut pairing = state.pairing_expires_at.subscribe();
+        let mut shutdown = state.shutdown.subscribe();
+        loop {
+            if *shutdown.borrow() {
                 return;
             }
-        }
-        if state.session_expires_at != u64::MAX {
-            let wait = Duration::from_millis(state.session_expires_at.saturating_sub(now_millis()));
-            tokio::time::sleep(wait).await;
-            state
-                .shutdown(BridgeStatus::Expired, "Agent session expired.")
-                .await;
+            let expiry = *pairing.borrow_and_update();
+            tokio::select! {
+                result = shutdown.changed() => { if result.is_err() { return; } }
+                result = pairing.changed() => { if result.is_err() { return; } }
+                () = wait_for_expiry(expiry) => {
+                    let should_expire = matches!(state.inner.lock().await.status, BridgeStatus::Waiting | BridgeStatus::ApprovalPending | BridgeStatus::Incompatible);
+                    if should_expire { state.shutdown(BridgeStatus::Expired, "Pairing instruction expired.").await; return; }
+                }
+                () = wait_for_expiry(Some(state.session_expires_at)) => {
+                    state.shutdown(BridgeStatus::Expired, "Agent session expired.").await;
+                    return;
+                }
+            }
         }
     });
 }

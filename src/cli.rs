@@ -10,8 +10,9 @@ use serde_json::{Value, json};
 use crate::client::AgentClient;
 use crate::contract::{NativeContract, PairingEnvelope};
 use crate::error::{AgentError, AgentResult};
+use crate::launch::{self, StartingBridge};
 use crate::process::{start_bridge_process, stop_owned_process};
-use crate::server::{BridgeServerOptions, GifGunBridgeServer};
+use crate::server::{BridgeServerOptions, GifGunBridgeServer, PairingSetup};
 use crate::session::{
     AgentSessionRecord, SessionStatus, SessionStore, StartupRecord, random_secret,
 };
@@ -29,7 +30,7 @@ const WORKFLOW_HELP: &str = "Efficient workflow:\n  1. Run 'capabilities --list'
     after_help = WORKFLOW_HELP
 )]
 pub struct Arguments {
-    #[arg(long, global = true)]
+    #[arg(long, global = true, allow_hyphen_values = true)]
     session: Option<String>,
     #[command(subcommand)]
     command: Command,
@@ -39,6 +40,15 @@ pub struct Arguments {
 enum Command {
     /// Pair with the open GifGun tab. Read the complete pairing instruction from stdin.
     Pair,
+    /// Open a visible editor in a new isolated workspace. Use its sessionId for every later command.
+    Open {
+        /// Create the session and return its editor URL without opening the system browser.
+        #[arg(long)]
+        no_browser: bool,
+        /// Use the official editor or an explicit loopback editor at /app.
+        #[arg(long, default_value = launch::APP_URL)]
+        app_url: String,
+    },
     /// Show the current local bridge and browser connection state.
     Status,
     /// Inspect browser capabilities. Use a bounded view unless complete output is required.
@@ -108,6 +118,8 @@ enum Command {
     Serve {
         #[arg(long)]
         startup: PathBuf,
+        #[arg(long)]
+        ready: bool,
     },
 }
 
@@ -154,7 +166,18 @@ pub async fn run() -> AgentResult<()> {
 async fn run_with(arguments: Arguments) -> AgentResult<()> {
     match arguments.command {
         Command::Pair => pair().await,
-        Command::Serve { startup } => serve(startup).await,
+        Command::Serve { startup, ready } => serve(startup, ready).await,
+        Command::Open {
+            no_browser,
+            app_url,
+        } => {
+            if arguments.session.is_some() {
+                return Err(AgentError::Cli(
+                    "open creates a new session; do not pass --session to this command".into(),
+                ));
+            }
+            open_editor(&app_url, no_browser)
+        }
         Command::Status => status(arguments.session.as_deref()).await,
         Command::Capabilities { list, id, full } => {
             capabilities(arguments.session.as_deref(), list, &id, full).await
@@ -215,7 +238,8 @@ async fn pair() -> AgentResult<()> {
         })?;
 
     let store = SessionStore::discover()?;
-    if let Ok(known) = store.read_session(None)
+    if let Ok(current) = store.current_session_id()
+        && let Ok(known) = store.read_session(Some(&current))
         && AgentClient::new(known)?
             .get("/v1/agent/status")
             .await
@@ -235,6 +259,7 @@ async fn pair() -> AgentResult<()> {
     let startup = StartupRecord {
         envelope: envelope_value,
         session: session.clone(),
+        launch_origin: None,
     };
     let startup_path = match store.write_startup(&startup) {
         Ok(path) => path,
@@ -295,19 +320,82 @@ async fn pair() -> AgentResult<()> {
     }
 }
 
-async fn serve(startup_path: PathBuf) -> AgentResult<()> {
+fn open_editor(app: &str, no_browser: bool) -> AgentResult<()> {
+    let app = launch::app_url(app)?;
+    let store = SessionStore::discover()?;
+    let id = random_secret(18)?;
+    let mut session = AgentSessionRecord::new(id.clone(), 0, random_secret(32)?);
+    session.workspace_id = Some(id.clone());
+    store.write_session(&session)?;
+    let result = (|| {
+        let startup = store.write_startup(&StartupRecord {
+            envelope: Value::Null,
+            session: session.clone(),
+            launch_origin: Some(app.origin().ascii_serialization()),
+        })?;
+        let mut child =
+            StartingBridge::start(&std::env::current_exe()?, &startup, &store.log_path(&id))?;
+        let ready = child.ready()?;
+        if ready.session_id != id || ready.port == 0 {
+            return Err(AgentError::State(
+                "the bridge startup response does not match this session".into(),
+            ));
+        }
+        let persisted = store.read_session(Some(&id))?;
+        if persisted.port != ready.port || persisted.workspace_id.as_deref() != Some(id.as_str()) {
+            return Err(AgentError::State(
+                "the bridge startup record does not match this workspace".into(),
+            ));
+        }
+        let url = launch::workspace_url(app, &id, ready.port, &id);
+        if !no_browser {
+            launch::open_browser(&url)?;
+        }
+        output(
+            json!({ "sessionId": id, "workspaceId": id, "port": ready.port, "status": "waiting", "editorUrl": url.as_str(), "next": "Sign in and approve this agent in the editor. Use --session with this sessionId for every command." }),
+        )?;
+        child.release()
+    })();
+    if result.is_err() {
+        let _ = store.remove_session(&id);
+    }
+    result
+}
+
+async fn serve(startup_path: PathBuf, ready: bool) -> AgentResult<()> {
     let store = SessionStore::discover()?;
     let startup = store.consume_startup(&startup_path)?;
     let contract = NativeContract::load_embedded()?;
-    contract
-        .validate_pairing(&startup.envelope)
-        .map_err(|_| AgentError::Cli("startup pairing envelope is invalid".into()))?;
-    let envelope: PairingEnvelope = serde_json::from_value(startup.envelope)
-        .map_err(|_| AgentError::Cli("startup pairing envelope is malformed".into()))?;
     let mut session = startup.session;
+    let pairing = if let Some(expected_origin) = startup.launch_origin {
+        if !ready {
+            return Err(AgentError::Cli(
+                "a managed launch requires its startup channel".into(),
+            ));
+        }
+        PairingSetup::Launch {
+            expected_origin,
+            workspace_id: session
+                .workspace_id
+                .clone()
+                .ok_or_else(|| AgentError::State("the managed workspace is missing".into()))?,
+        }
+    } else {
+        if ready {
+            return Err(AgentError::Cli(
+                "this startup channel is not for a managed launch".into(),
+            ));
+        }
+        contract
+            .validate_pairing(&startup.envelope)
+            .map_err(|_| AgentError::Cli("startup pairing envelope is invalid".into()))?;
+        let envelope: PairingEnvelope = serde_json::from_value(startup.envelope)
+            .map_err(|_| AgentError::Cli("startup pairing envelope is malformed".into()))?;
+        PairingSetup::Instruction(envelope)
+    };
     let server = match GifGunBridgeServer::start(BridgeServerOptions {
-        port: envelope.port,
-        envelope,
+        port: session.port,
+        pairing,
         agent_token: session.agent_token.clone(),
         session_id: session.session_id.clone(),
         command_timeout: Duration::from_secs(60),
@@ -322,11 +410,28 @@ async fn serve(startup_path: PathBuf) -> AgentResult<()> {
         }
     };
     session.pid = Some(std::process::id());
+    session.port = server.address().port();
     session.status = SessionStatus::Waiting;
     if let Err(error) = store.write_session(&session) {
         let _ = server.close().await;
         let _ = store.remove_session(&session.session_id);
         return Err(error);
+    }
+
+    if ready {
+        let confirmed = (|| -> AgentResult<bool> {
+            output(json!({ "sessionId": session.session_id, "port": session.port }))?;
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            Ok(line == "ready\n")
+        })();
+        if !matches!(confirmed, Ok(true)) {
+            let _ = server.close().await;
+            let _ = store.remove_session(&session.session_id);
+            return Err(AgentError::State(
+                "the launch owner closed before startup was complete".into(),
+            ));
+        }
     }
 
     let shutdown = server.shutdown_handle();
@@ -789,8 +894,14 @@ async fn disconnect(selected: Option<&str>) -> AgentResult<()> {
     let store = SessionStore::discover()?;
     let session = store.read_session(selected)?;
     let client = AgentClient::new(session.clone())?;
-    let _ = client.post("/v1/agent/disconnect", json!({})).await;
-    store.remove_session(&session.session_id)?;
+    // The daemon owns cleanup after it accepts the disconnect. Do not race its file removal.
+    if client
+        .post("/v1/agent/disconnect", json!({}))
+        .await
+        .is_err()
+    {
+        store.remove_session(&session.session_id)?;
+    }
     output(json!({"sessionId": session.session_id, "status": "disconnected"}))
 }
 

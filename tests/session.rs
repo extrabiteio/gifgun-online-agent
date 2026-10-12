@@ -73,6 +73,7 @@ fn startup_handoff_is_one_use_and_separate_from_durable_session() {
     let startup = StartupRecord {
         envelope: json!({"pairingToken": "one-use-pairing-token"}),
         session: session(),
+        launch_origin: None,
     };
 
     let path = store.write_startup(&startup).unwrap();

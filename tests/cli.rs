@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use gifgun_agent::contract::{NativeContract, PairingEnvelope};
-use gifgun_agent::session::Secret;
+use gifgun_agent::session::{AgentSessionRecord, Secret, SessionStore};
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
 use tempfile::tempdir;
@@ -180,6 +180,124 @@ async fn real_cli_pairs_tracks_status_and_disconnects_native_daemon() {
     assert_eq!(
         serde_json::from_slice::<Value>(&disconnected.stdout).unwrap()["status"],
         "disconnected"
+    );
+}
+
+#[test]
+fn accepts_a_session_identifier_that_starts_with_a_hyphen() {
+    let directory = tempdir().unwrap();
+    let store = SessionStore::at(directory.path());
+    let record = AgentSessionRecord::new(
+        "-synthetic-session".to_owned(),
+        0,
+        "synthetic-agent-token".to_owned(),
+    );
+    store.write_session(&record).unwrap();
+    let result = run_cli(
+        &["--session", &record.session_id, "disconnect"],
+        directory.path(),
+        "",
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&result.stdout).unwrap()["sessionId"],
+        record.session_id
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_managed_sessions_use_owned_ports_and_explicit_targets() {
+    let directory = tempdir().unwrap();
+    let (first, second) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| run_cli(&["open", "--no-browser"], directory.path(), ""));
+        let second = scope.spawn(|| run_cli(&["open", "--no-browser"], directory.path(), ""));
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    let values = [first, second].map(|output| {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stdout)
+                .contains(directory.path().to_string_lossy().as_ref())
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    });
+    struct Cleanup<'a> {
+        cache: &'a std::path::Path,
+        ids: Vec<String>,
+    }
+    impl Drop for Cleanup<'_> {
+        fn drop(&mut self) {
+            for id in &self.ids {
+                let _ = run_cli(&["--session", id, "disconnect"], self.cache, "");
+            }
+        }
+    }
+    let cleanup = Cleanup {
+        cache: directory.path(),
+        ids: values
+            .iter()
+            .map(|value| value["sessionId"].as_str().unwrap().to_owned())
+            .collect(),
+    };
+    assert_ne!(values[0]["sessionId"], values[1]["sessionId"]);
+    assert_ne!(values[0]["port"], values[1]["port"]);
+    assert!(!directory.path().join("current").exists());
+    let default = run_cli(&["status"], directory.path(), "");
+    assert!(!default.status.success());
+    assert!(String::from_utf8_lossy(&default.stderr).contains("--session"));
+    let client = Client::new();
+    let contract = NativeContract::load_embedded().unwrap();
+    for value in &values {
+        let id = value["sessionId"].as_str().unwrap();
+        let workspace = value["workspaceId"].as_str().unwrap();
+        let port = value["port"].as_u64().unwrap();
+        let url = url::Url::parse(value["editorUrl"].as_str().unwrap()).unwrap();
+        let origin = url.origin().ascii_serialization();
+        let paired = client.post(format!("http://127.0.0.1:{port}/v1/launch/{id}/{workspace}/pair")).header("Origin", &origin)
+            .json(&json!({"version": 1, "port": port, "pairingToken": PAIRING_TOKEN, "expectedOrigin": origin, "expiresAt": now_millis() + 60_000, "compatibility": contract.compatibility()})).send().await.unwrap();
+        assert_eq!(paired.status(), StatusCode::OK);
+        let approved = client
+            .post(format!("http://127.0.0.1:{port}/v1/pair/approve"))
+            .header("Origin", &origin)
+            .bearer_auth(PAIRING_TOKEN)
+            .json(&json!({"compatibility": contract.compatibility()}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(approved.status(), StatusCode::OK);
+        let status = run_cli(&["--session", id, "status"], directory.path(), "");
+        assert!(status.status.success());
+        let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+        assert_eq!(status["sessionId"], id);
+        assert_eq!(status["status"], "connected");
+    }
+    let stopped = run_cli(
+        &["--session", &cleanup.ids[0], "disconnect"],
+        directory.path(),
+        "",
+    );
+    assert!(
+        stopped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+    let other = run_cli(
+        &["--session", &cleanup.ids[1], "status"],
+        directory.path(),
+        "",
+    );
+    assert!(other.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&other.stdout).unwrap()["sessionId"],
+        cleanup.ids[1]
     );
 }
 

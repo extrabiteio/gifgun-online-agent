@@ -34,3 +34,7 @@ jobs:
           persist-credentials: false
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+      - name: Check the system browser opener
+        env:
+          BROWSER: google-chrome --headless --no-sandbox --disable-gpu --dump-dom
+        run: node --test tests/browser-launch.mjs

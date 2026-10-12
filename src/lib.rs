@@ -2,6 +2,7 @@ pub mod cli;
 pub mod client;
 pub mod contract;
 pub mod error;
+pub mod launch;
 pub mod platform;
 pub mod process;
 pub mod server;
