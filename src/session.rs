@@ -55,6 +55,8 @@ pub struct AgentSessionRecord {
     pub created_at: u64,
     pub expires_at: u64,
     pub status: SessionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
 }
 
 impl AgentSessionRecord {
@@ -68,6 +70,7 @@ impl AgentSessionRecord {
             created_at,
             expires_at: created_at.saturating_add(SESSION_LIFETIME_MILLIS),
             status: SessionStatus::Starting,
+            workspace_id: None,
         }
     }
 }
@@ -91,6 +94,8 @@ impl fmt::Debug for AgentSessionRecord {
 pub struct StartupRecord {
     pub envelope: Value,
     pub session: AgentSessionRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_origin: Option<String>,
 }
 
 impl fmt::Debug for StartupRecord {
@@ -156,11 +161,17 @@ impl SessionStore {
 
     pub fn write_session(&self, session: &AgentSessionRecord) -> AgentResult<()> {
         ensure_session_id(&session.session_id)?;
+        if let Some(workspace) = &session.workspace_id {
+            ensure_session_id(workspace)?;
+        }
         self.ensure()?;
         self.write_json(&self.session_path(&session.session_id), session)
     }
 
     pub fn read_session(&self, session_id: Option<&str>) -> AgentResult<AgentSessionRecord> {
+        if session_id.is_none() && self.has_managed_session()? {
+            return Err(AgentError::State("use --session with the sessionId returned by open; a managed workspace must not use the shared default session".into()));
+        }
         let selected = match session_id {
             Some(value) => value.to_owned(),
             None => self.current_session_id()?,
@@ -174,6 +185,38 @@ impl SessionStore {
             ));
         }
         Ok(session)
+    }
+
+    fn has_managed_session(&self) -> AgentResult<bool> {
+        let entries = match fs::read_dir(self.sessions_directory()) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        for entry in entries {
+            let path = entry?.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json")
+                || path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.ends_with(".startup.json"))
+            {
+                continue;
+            }
+            let session: AgentSessionRecord = self.read_json(&path).map_err(|_| {
+                AgentError::State(
+                    "select a session with --session; a local session record could not be read"
+                        .into(),
+                )
+            })?;
+            if session.workspace_id.is_some()
+                && session.expires_at > now_millis()
+                && session.status != SessionStatus::Stopped
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub fn write_startup(&self, startup: &StartupRecord) -> AgentResult<PathBuf> {
@@ -265,7 +308,7 @@ pub fn secrets_equal(left: Option<&str>, right: Option<&str>) -> bool {
     bool::from(left.as_bytes().ct_eq(right.as_bytes()))
 }
 
-fn ensure_session_id(session_id: &str) -> AgentResult<()> {
+pub(crate) fn ensure_session_id(session_id: &str) -> AgentResult<()> {
     if session_id.len() < 8
         || session_id.len() > 256
         || !session_id

@@ -4,6 +4,14 @@ GifGun Online Agent is a native local bridge for [GifGun Online](https://gifgun.
 
 The browser remains authoritative for editor state, media validation, project data, preview, and rendering. The native process supplies a local command and file-transfer boundary.
 
+## Managed workspaces
+
+The downloaded executable can open a visible editor with `open`. Each launch creates a separate workspace and a separate local bridge. Sign in and approve the connection in the editor. No pairing instruction must be copied for this flow.
+
+Use the returned `sessionId` with `--session` for every later command. Managed workspaces do not change or use the shared default session. Use the executable's `--help` and runtime `capabilities` response for the command interface.
+
+Reload keeps the workspace and its local draft. Disconnect stops the bridge, not the shared browser. A closed browser cannot redirect commands to another workspace. The copied-instruction flow remains available for an existing editor tab.
+
 ## Security model
 
 - The bridge listens only on the loopback interface.
