@@ -19,7 +19,7 @@ use axum::routing::{get, post};
 use bytes::Bytes;
 use futures_util::{TryStreamExt, stream};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
@@ -50,10 +50,48 @@ enum BridgeStatus {
     Incompatible,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LauncherStatus {
+    Waiting,
+    ApprovalPending,
+    Connected,
+    Reconnecting,
+    Stopped,
+}
+
 #[derive(Clone)]
 struct BrowserStream {
     id: String,
     sender: mpsc::Sender<Result<Bytes, Infallible>>,
+}
+
+struct BrowserStreamReceiver {
+    receiver: mpsc::Receiver<Result<Bytes, Infallible>>,
+    state: Arc<BridgeState>,
+    id: String,
+}
+
+impl Drop for BrowserStreamReceiver {
+    fn drop(&mut self) {
+        let state = Arc::clone(&self.state);
+        let id = self.id.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let mut inner = state.inner.lock().await;
+                if inner
+                    .browser_stream
+                    .as_ref()
+                    .is_some_and(|current| current.id == id)
+                {
+                    inner.browser_stream = None;
+                    state
+                        .launcher_status
+                        .send_replace(LauncherStatus::Reconnecting);
+                }
+            });
+        }
+    }
 }
 
 struct PendingCommand {
@@ -85,6 +123,7 @@ struct BridgeState {
     inner: Mutex<BridgeInner>,
     transfers: TransferManager,
     shutdown: watch::Sender<bool>,
+    launcher_status: watch::Sender<LauncherStatus>,
 }
 
 impl BridgeState {
@@ -98,6 +137,7 @@ impl BridgeState {
             let _ = pending.sender.send(Err(message.to_owned()));
         }
         self.transfers.clear();
+        self.launcher_status.send_replace(LauncherStatus::Stopped);
         drop(inner);
         let _ = self.shutdown.send(true);
     }
@@ -115,6 +155,8 @@ impl BridgeState {
             .is_some_and(|known| known.id == stream.id)
         {
             inner.browser_stream = None;
+            self.launcher_status
+                .send_replace(LauncherStatus::Reconnecting);
         }
         Err(())
     }
@@ -256,6 +298,7 @@ impl GifGunBridgeServer {
         }
         let (shutdown, mut shutdown_receiver) = watch::channel(false);
         let (pairing_expires_at, _) = watch::channel(pairing_expiry);
+        let (launcher_status, _) = watch::channel(LauncherStatus::Waiting);
         let state = Arc::new(BridgeState {
             contract: Arc::clone(&contract),
             expected_origin,
@@ -283,6 +326,7 @@ impl GifGunBridgeServer {
             }),
             transfers: TransferManager::default(),
             shutdown,
+            launcher_status,
         });
         let router = router(Arc::clone(&state));
         let task = tokio::spawn(async move {
@@ -311,6 +355,10 @@ impl GifGunBridgeServer {
 
     pub fn url(&self, path: &str) -> String {
         format!("http://127.0.0.1:{}{path}", self.address.port())
+    }
+
+    pub fn launcher_status(&self) -> watch::Receiver<LauncherStatus> {
+        self.state.launcher_status.subscribe()
     }
 
     pub fn shutdown_handle(&self) -> BridgeShutdown {
@@ -362,6 +410,10 @@ fn router(state: Arc<BridgeState>) -> Router {
         .route(
             "/v1/browser/stream",
             get(browser_stream).options(browser_preflight),
+        )
+        .route(
+            "/v1/browser/handoff",
+            get(browser_handoff).options(browser_preflight),
         )
         .route(
             "/v1/browser/result",
@@ -524,6 +576,9 @@ async fn pair_status(State(state): State<Arc<BridgeState>>, headers: HeaderMap) 
     let mut inner = state.inner.lock().await;
     if inner.status == BridgeStatus::Waiting {
         inner.status = BridgeStatus::ApprovalPending;
+        state
+            .launcher_status
+            .send_replace(LauncherStatus::ApprovalPending);
     }
     let status = inner.status;
     drop(inner);
@@ -630,20 +685,76 @@ async fn browser_stream(State(state): State<Arc<BridgeState>>, headers: HeaderMa
         Err(_) => return invalid_request(&state, "browser stream unavailable", true),
     };
     let stream = BrowserStream {
-        id,
+        id: id.clone(),
         sender: sender.clone(),
     };
-    state.inner.lock().await.browser_stream = Some(stream);
+    {
+        let mut inner = state.inner.lock().await;
+        if inner.status != BridgeStatus::Connected
+            || !has_token(&headers, inner.browser_token.as_ref())
+        {
+            return json_response(
+                &state,
+                StatusCode::UNAUTHORIZED,
+                json!({"error": "invalid_browser_session"}),
+                true,
+            );
+        }
+        inner.browser_stream = Some(stream);
+        state
+            .launcher_status
+            .send_replace(LauncherStatus::Connected);
+    }
     let _ = sender
         .send(Ok(Bytes::from(format!(
             "{}\n",
             json!({"type": "connected", "at": now_millis()})
         ))))
         .await;
+    let receiver = BrowserStreamReceiver {
+        receiver,
+        state: Arc::clone(&state),
+        id,
+    };
     let body_stream = stream::unfold(receiver, |mut receiver| async {
-        receiver.recv().await.map(|item| (item, receiver))
+        receiver.receiver.recv().await.map(|item| (item, receiver))
     });
     stream_response(&state, Body::from_stream(body_stream))
+}
+
+async fn browser_handoff(State(state): State<Arc<BridgeState>>, headers: HeaderMap) -> Response {
+    if let Some(response) = authorize_browser_session(&state, &headers).await {
+        return response;
+    }
+    let inner = state.inner.lock().await;
+    if inner.status != BridgeStatus::Connected
+        || !has_token(&headers, inner.browser_token.as_ref())
+        || inner
+            .browser_stream
+            .as_ref()
+            .is_none_or(|stream| stream.sender.is_closed())
+    {
+        return json_response(
+            &state,
+            StatusCode::CONFLICT,
+            json!({"error": "browser_disconnected"}),
+            true,
+        );
+    }
+    match crate::handoff::instruction(&state.session_id) {
+        Ok(instruction) => json_response(
+            &state,
+            StatusCode::OK,
+            json!({"sessionId": state.session_id, "instruction": instruction}),
+            true,
+        ),
+        Err(_) => json_response(
+            &state,
+            StatusCode::CONFLICT,
+            json!({"error": "handoff_unavailable"}),
+            true,
+        ),
+    }
 }
 
 async fn browser_result(
