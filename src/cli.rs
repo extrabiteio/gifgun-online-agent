@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::client::AgentClient;
 use crate::contract::{NativeContract, PairingEnvelope};
 use crate::error::{AgentError, AgentResult};
-use crate::launch::{self, StartingBridge};
+use crate::launch::{self, PendingEditor};
 use crate::process::{start_bridge_process, stop_owned_process};
 use crate::server::{BridgeServerOptions, GifGunBridgeServer, PairingSetup};
 use crate::session::{
@@ -33,11 +33,18 @@ pub struct Arguments {
     #[arg(long, global = true, allow_hyphen_values = true)]
     session: Option<String>,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Open a workspace console and keep its bridge alive until the console closes.
+    Launch {
+        #[arg(long)]
+        no_browser: bool,
+        #[arg(long, default_value = launch::APP_URL)]
+        app_url: String,
+    },
     /// Pair with the open GifGun tab. Read the complete pairing instruction from stdin.
     Pair,
     /// Open a visible editor in a new isolated workspace. Use its sessionId for every later command.
@@ -120,6 +127,8 @@ enum Command {
         startup: PathBuf,
         #[arg(long)]
         ready: bool,
+        #[arg(long)]
+        owned: bool,
     },
 }
 
@@ -164,9 +173,32 @@ pub async fn run() -> AgentResult<()> {
 }
 
 async fn run_with(arguments: Arguments) -> AgentResult<()> {
-    match arguments.command {
+    if arguments.command.is_none() && arguments.session.is_some() {
+        return Err(AgentError::Cli(
+            "select a command when using --session".into(),
+        ));
+    }
+    match arguments.command.unwrap_or(Command::Launch {
+        no_browser: false,
+        app_url: launch::APP_URL.to_owned(),
+    }) {
+        Command::Launch {
+            no_browser,
+            app_url,
+        } => {
+            if arguments.session.is_some() {
+                return Err(AgentError::Cli(
+                    "launch creates a new session; do not pass --session".into(),
+                ));
+            }
+            crate::console::run(&app_url, no_browser).await
+        }
         Command::Pair => pair().await,
-        Command::Serve { startup, ready } => serve(startup, ready).await,
+        Command::Serve {
+            startup,
+            ready,
+            owned,
+        } => serve(startup, ready, owned).await,
         Command::Open {
             no_browser,
             app_url,
@@ -321,52 +353,23 @@ async fn pair() -> AgentResult<()> {
 }
 
 fn open_editor(app: &str, no_browser: bool) -> AgentResult<()> {
-    let app = launch::app_url(app)?;
-    let store = SessionStore::discover()?;
-    let id = random_secret(18)?;
-    let mut session = AgentSessionRecord::new(id.clone(), 0, random_secret(32)?);
-    session.workspace_id = Some(id.clone());
-    store.write_session(&session)?;
-    let result = (|| {
-        let startup = store.write_startup(&StartupRecord {
-            envelope: Value::Null,
-            session: session.clone(),
-            launch_origin: Some(app.origin().ascii_serialization()),
-        })?;
-        let mut child =
-            StartingBridge::start(&std::env::current_exe()?, &startup, &store.log_path(&id))?;
-        let ready = child.ready()?;
-        if ready.session_id != id || ready.port == 0 {
-            return Err(AgentError::State(
-                "the bridge startup response does not match this session".into(),
-            ));
-        }
-        let persisted = store.read_session(Some(&id))?;
-        if persisted.port != ready.port || persisted.workspace_id.as_deref() != Some(id.as_str()) {
-            return Err(AgentError::State(
-                "the bridge startup record does not match this workspace".into(),
-            ));
-        }
-        let url = launch::workspace_url(app, &id, ready.port, &id);
-        if !no_browser {
-            launch::open_browser(&url)?;
-        }
-        output(
-            json!({ "sessionId": id, "workspaceId": id, "port": ready.port, "status": "waiting", "editorUrl": url.as_str(), "next": "Sign in and approve this agent in the editor. Use --session with this sessionId for every command." }),
-        )?;
-        child.release()
-    })();
-    if result.is_err() {
-        let _ = store.remove_session(&id);
-    }
-    result
+    let pending = PendingEditor::start(app, no_browser, false)?;
+    output(
+        json!({ "sessionId": pending.session_id, "workspaceId": pending.session_id, "port": pending.port, "status": "waiting", "editorUrl": pending.editor_url.as_str(), "next": "Sign in and approve this agent in the editor. Use --session with this sessionId for every command." }),
+    )?;
+    pending.detach()
 }
 
-async fn serve(startup_path: PathBuf, ready: bool) -> AgentResult<()> {
+async fn serve(startup_path: PathBuf, ready: bool, owned: bool) -> AgentResult<()> {
     let store = SessionStore::discover()?;
     let startup = store.consume_startup(&startup_path)?;
     let contract = NativeContract::load_embedded()?;
     let mut session = startup.session;
+    if owned && (!ready || startup.launch_origin.is_none()) {
+        return Err(AgentError::Cli(
+            "an owned bridge requires a managed startup channel".into(),
+        ));
+    }
     let pairing = if let Some(expected_origin) = startup.launch_origin {
         if !ready {
             return Err(AgentError::Cli(
@@ -434,13 +437,52 @@ async fn serve(startup_path: PathBuf, ready: bool) -> AgentResult<()> {
         }
     }
 
+    let mut owner_loss = None;
+    if owned {
+        let (closed, lost_owner) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let _ = std::io::stdin().read_line(&mut String::new());
+            let _ = closed.send(());
+        });
+        owner_loss = Some(lost_owner);
+        let shutdown = server.shutdown_handle();
+        let mut status = server.launcher_status();
+        tokio::spawn(async move {
+            loop {
+                let current = *status.borrow_and_update();
+                if output(serde_json::to_value(current).expect("launcher status")).is_err() {
+                    shutdown.close().await;
+                    return;
+                }
+                if current == crate::server::LauncherStatus::Stopped
+                    || status.changed().await.is_err()
+                {
+                    return;
+                }
+            }
+        });
+    }
+
     let shutdown = server.shutdown_handle();
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
             shutdown.close().await;
         }
     });
-    let result = server.wait().await;
+    let shutdown = server.shutdown_handle();
+    let result = if let Some(lost_owner) = owner_loss {
+        tokio::select! {
+            result = server.wait() => result,
+            _ = lost_owner => {
+                // Owner loss also stops requests whose bodies have not arrived.
+                // Remove this daemon's files before its runtime closes the sockets.
+                shutdown.close().await;
+                Ok(())
+            }
+        }
+    } else {
+        server.wait().await
+    };
     let cleanup = store.remove_session(&session.session_id);
     result?;
     cleanup
@@ -448,16 +490,9 @@ async fn serve(startup_path: PathBuf, ready: bool) -> AgentResult<()> {
 
 async fn status(selected: Option<&str>) -> AgentResult<()> {
     let store = SessionStore::discover()?;
-    let mut session = store.read_session(selected)?;
-    let value = AgentClient::new(session.clone())?
-        .get("/v1/agent/status")
-        .await?;
-    session.status = match value.get("status").and_then(Value::as_str) {
-        Some("connected") => SessionStatus::Connected,
-        Some("waiting" | "approval_pending") => SessionStatus::Waiting,
-        _ => SessionStatus::Stopped,
-    };
-    store.write_session(&session)?;
+    let session = store.read_session(selected)?;
+    let value = AgentClient::new(session)?.get("/v1/agent/status").await?;
+    // A late reply must not recreate a session removed by its owner.
     output(value)
 }
 
@@ -1006,6 +1041,19 @@ fn now_millis() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn no_arguments_select_the_console_but_a_session_requires_a_command() {
+        assert!(
+            Arguments::try_parse_from(["gifgun-agent"])
+                .unwrap()
+                .command
+                .is_none()
+        );
+        let arguments =
+            Arguments::try_parse_from(["gifgun-agent", "--session", "session-owned"]).unwrap();
+        assert!(run_with(arguments).await.is_err());
+    }
 
     #[test]
     fn capability_list_omits_schemas_and_selection_keeps_requested_definitions() {

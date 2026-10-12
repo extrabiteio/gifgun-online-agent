@@ -1,7 +1,9 @@
 pub mod cli;
 pub mod client;
+pub mod console;
 pub mod contract;
 pub mod error;
+pub mod handoff;
 pub mod launch;
 pub mod platform;
 pub mod process;

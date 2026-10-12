@@ -4,9 +4,19 @@ GifGun Online Agent is a native local bridge for [GifGun Online](https://gifgun.
 
 The browser remains authoritative for editor state, media validation, project data, preview, and rendering. The native process supplies a local command and file-transfer boundary.
 
+## Workspace console
+
+On Windows, open the downloaded executable to start a workspace console. No command arguments are needed. The console opens a separate editor tab. Sign in and approve the connection in the browser. When the editor connects, copy the AI instruction from the console or the browser and paste it into a coding agent on the same computer.
+
+Keep the console open while the agent uses the workspace. Press Enter or Ctrl+C, or close the console, to stop only its bridge. The browser and saved draft remain. Running the executable again creates another console and workspace. All copies use the same private per-user session store, but each session has separate credentials and an explicit target. There is no shared current workspace.
+
+The executable is a local bridge, not an AI model. The instruction reuses its approved session. It does not start another workspace or expose connection credentials.
+
+The `launch` command starts the same console flow. The macOS and Linux command interface remains available; this release does not add a double-click application package for those systems.
+
 ## Managed workspaces
 
-The downloaded executable can open a visible editor with `open`. Each launch creates a separate workspace and a separate local bridge. Sign in and approve the connection in the editor. No pairing instruction must be copied for this flow.
+For scripts and coding agents, the downloaded executable can open a visible editor with `open`. Each launch creates a separate workspace and a separate local bridge. Sign in and approve the connection in the editor. No pairing instruction must be copied for this flow.
 
 Use the returned `sessionId` with `--session` for every later command. Managed workspaces do not change or use the shared default session. Use the executable's `--help` and runtime `capabilities` response for the command interface.
 
