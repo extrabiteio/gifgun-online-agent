@@ -11,8 +11,9 @@ fn main() {
         let console = arguments.len() == 1
             || arguments.get(1).and_then(|value| value.to_str()) == Some("launch");
         if console && std::io::stdin().is_terminal() {
-            println!("Press Enter to close this console.");
-            let _ = std::io::stdin().read_line(&mut String::new());
+            runtime.block_on(gifgun_agent::console::wait_for_close(
+                tokio::signal::ctrl_c(),
+            ));
         }
         std::process::exit(1);
     }

@@ -77,21 +77,28 @@ for (const mode of ['open', 'launch']) {
       assert.equal(address.searchParams.get('agentSession'), sessionId);
       assert.equal(address.searchParams.get('agentPort'), String(launched.port));
       assert.deepEqual([...address.searchParams.keys()].sort(), ['ae', 'agentPort', 'agentSession', 'workspace']);
+      if (console) console.child.stdin.end('\n');
       const status = await run(['--session', sessionId, 'status']);
       assert.equal(status.sessionId, sessionId);
       assert.equal(status.browserConnected, false);
     } finally {
       try {
-        if (console) {
-          console.child.stdin.end('\n');
-          assert.equal(await console.closed, 0);
-          assert.ok(console.output().includes(`Workspace: ${sessionId}`));
-          assert.ok(console.output().includes('This bridge has stopped.'));
-        } else if (sessionId) {
+        if (sessionId) {
           const stopped = await run(['--session', sessionId, 'disconnect']);
           assert.equal(stopped.status, 'disconnected');
         }
+        if (console) {
+          if (!sessionId && console.child.exitCode === null) console.child.kill();
+          assert.equal(await console.closed, 0);
+          assert.ok(console.output().includes(`Workspace: ${sessionId}`));
+          assert.ok(console.output().includes('Enter does not stop it.'));
+          assert.ok(console.output().includes('This bridge has stopped.'));
+        }
       } finally {
+        if (console && console.child.exitCode === null && console.child.signalCode === null) {
+          console.child.kill();
+          await console.closed.catch(() => undefined);
+        }
         await new Promise(resolve => server.close(resolve));
         await rm(cache, { recursive: true, force: true });
       }

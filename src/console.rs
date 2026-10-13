@@ -1,12 +1,13 @@
 use std::io::{BufRead, IsTerminal};
 
-use tokio::sync::{oneshot, watch};
+use tokio::sync::watch;
 
 use crate::error::{AgentError, AgentResult};
 use crate::launch::PendingEditor;
 use crate::server::LauncherStatus;
 
 pub async fn run(app: &str, no_browser: bool) -> AgentResult<()> {
+    ignore_input();
     println!("GifGun Agent {}", env!("CARGO_PKG_VERSION"));
     println!(
         "Opening a separate editor workspace. Sign in and approve the connection in the browser."
@@ -22,7 +23,7 @@ async fn run_session(app: &str, no_browser: bool) -> AgentResult<()> {
         println!("Editor: {}", pending.editor_url);
     }
     println!(
-        "Keep this console open. Press Enter or Ctrl+C to stop only this bridge. Your browser and saved draft stay open."
+        "Keep this console open. Press Ctrl+C or close the console to stop only this bridge. Enter does not stop it. Your browser and saved draft stay open."
     );
     let mut bridge = pending.own()?;
     let reader = bridge
@@ -40,11 +41,6 @@ async fn run_session(app: &str, no_browser: bool) -> AgentResult<()> {
             };
             sender.send_replace(value);
         }
-    });
-    let (entered, mut input) = oneshot::channel();
-    std::thread::spawn(move || {
-        let _ = std::io::stdin().read_line(&mut String::new());
-        let _ = entered.send(());
     });
     let stop = tokio::signal::ctrl_c();
     tokio::pin!(stop);
@@ -70,7 +66,6 @@ async fn run_session(app: &str, no_browser: bool) -> AgentResult<()> {
         }
         tokio::select! {
             changed = status.changed() => { if changed.is_err() { break; } }
-            _ = &mut input => { user_stopped = true; break; }
             _ = &mut stop => { user_stopped = true; break; }
         }
     }
@@ -78,8 +73,31 @@ async fn run_session(app: &str, no_browser: bool) -> AgentResult<()> {
     let _ = reader_task.join();
     println!("This bridge has stopped. Other workspaces are unchanged.");
     if !user_stopped && std::io::stdin().is_terminal() {
-        println!("Press Enter to close this console.");
-        let _ = input.await;
+        wait_for_close(stop).await;
     }
     Ok(())
+}
+
+fn ignore_input() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        std::thread::spawn(|| {
+            // Discard input without treating Enter or EOF as a stop request.
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+        });
+    });
+}
+
+pub async fn wait_for_close(stop: impl std::future::Future<Output = std::io::Result<()>>) {
+    ignore_input();
+    tokio::pin!(stop);
+    tokio::select! {
+        // Register the control-event listener before showing the close instruction.
+        biased;
+        _ = &mut stop => {}
+        _ = async {
+            println!("Press Ctrl+C or close this console.");
+            std::future::pending::<()>().await;
+        } => {}
+    }
 }
