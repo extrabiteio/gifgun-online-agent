@@ -236,27 +236,74 @@ impl Console {
 }
 impl Drop for Console {
     fn drop(&mut self) {
-        if let Some(mut input) = self.child.stdin.take() {
-            let _ = input.write_all(b"\n");
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
         }
         let _ = self.child.wait();
     }
 }
 
+enum ConsoleStop {
+    Disconnect,
+    Terminate,
+    #[cfg(unix)]
+    Interrupt,
+}
+
+enum ConsoleInput {
+    None,
+    BeforePairing,
+    AfterApproval,
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn consoles_have_independent_owners_and_print_the_approved_handoff() {
-    check_console_ownership(false).await;
+    check_console_ownership(ConsoleStop::Disconnect, ConsoleInput::None).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn terminating_a_console_stops_only_its_owned_bridge() {
-    check_console_ownership(true).await;
+    check_console_ownership(ConsoleStop::Terminate, ConsoleInput::None).await;
 }
 
-async fn check_console_ownership(terminate: bool) {
+#[tokio::test(flavor = "multi_thread")]
+async fn enter_and_input_eof_do_not_stop_a_waiting_console() {
+    check_console_ownership(ConsoleStop::Disconnect, ConsoleInput::BeforePairing).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pasted_lines_and_input_eof_do_not_stop_an_approved_console() {
+    check_console_ownership(ConsoleStop::Disconnect, ConsoleInput::AfterApproval).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn interrupting_a_console_stops_only_its_owned_bridge() {
+    check_console_ownership(ConsoleStop::Interrupt, ConsoleInput::None).await;
+}
+
+fn send_console_input(console: &mut Console) {
+    let mut input = console.child.stdin.take().unwrap();
+    input.write_all(b"\nsynthetic console input\r\n\n").unwrap();
+    // Close only the public input. The daemon's private ownership pipe must stay open.
+}
+
+fn disconnect(cache: &std::path::Path, session_id: &str) {
+    let result = Command::new(env!("CARGO_BIN_EXE_gifgun-agent"))
+        .args(["--session", session_id, "disconnect"])
+        .env("GIFGUN_AGENT_CACHE_DIR", cache)
+        .output()
+        .unwrap();
+    assert!(result.status.success());
+}
+
+async fn check_console_ownership(stop: ConsoleStop, input: ConsoleInput) {
     let directory = tempdir().unwrap();
     let mut first = Console::start(directory.path());
-    let second = Console::start(directory.path());
+    if matches!(input, ConsoleInput::BeforePairing) {
+        send_console_input(&mut first);
+    }
+    let mut second = Console::start(directory.path());
     let first_id = first.line("Workspace: ");
     let second_id = second.line("Workspace: ");
     assert_ne!(first_id, second_id);
@@ -318,19 +365,51 @@ async fn check_console_ownership(terminate: bool) {
         gifgun_agent::handoff::instruction(&first_id).unwrap()
     );
     assert!(!output.contains(&second_id));
-    if terminate {
-        first.child.kill().unwrap();
-        first.child.wait().unwrap();
-        // The daemon closes the authenticated stream when the ownership pipe closes.
-        stream.bytes().await.unwrap();
-    } else {
-        drop(stream);
+    if matches!(input, ConsoleInput::AfterApproval) {
+        send_console_input(&mut first);
+        let handoff = client
+            .get(format!("http://127.0.0.1:{port}/v1/browser/handoff"))
+            .header("Origin", &origin)
+            .bearer_auth(approved["browserToken"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(handoff.status(), StatusCode::OK);
+    }
+    let store = SessionStore::at(directory.path());
+    match stop {
+        ConsoleStop::Terminate => {
+            first.child.kill().unwrap();
+            first.child.wait().unwrap();
+            // The daemon closes the authenticated stream when the ownership pipe closes.
+            stream.bytes().await.unwrap();
+        }
+        ConsoleStop::Disconnect => {
+            disconnect(directory.path(), &first_id);
+            assert!(first.child.wait().unwrap().success());
+            assert!(!store.session_path(&first_id).exists());
+            drop(stream);
+        }
+        #[cfg(unix)]
+        ConsoleStop::Interrupt => {
+            // Keep the owned child unreaped so its PID cannot be reused before the signal.
+            assert!(first.child.try_wait().unwrap().is_none());
+            assert!(
+                Command::new("/bin/kill")
+                    .arg("-INT")
+                    .arg(first.child.id().to_string())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            assert!(first.child.wait().unwrap().success());
+            assert!(!store.session_path(&first_id).exists());
+            stream.bytes().await.unwrap();
+        }
     }
     drop(first);
-    let store = SessionStore::at(directory.path());
-    if !terminate {
-        assert!(!store.session_path(&first_id).exists());
-    }
     let status = Command::new(env!("CARGO_BIN_EXE_gifgun-agent"))
         .args(["--session", &second_id, "status"])
         .env("GIFGUN_AGENT_CACHE_DIR", directory.path())
@@ -341,6 +420,8 @@ async fn check_console_ownership(terminate: bool) {
         serde_json::from_slice::<Value>(&status.stdout).unwrap()["sessionId"],
         second_id
     );
+    disconnect(directory.path(), &second_id);
+    assert!(second.child.wait().unwrap().success());
     drop(second);
     assert!(!store.session_path(&second_id).exists());
 }

@@ -8,7 +8,7 @@ The browser remains authoritative for editor state, media validation, project da
 
 On Windows, open the downloaded executable to start a workspace console. No command arguments are needed. The console opens a separate editor tab. Sign in and approve the connection in the browser. When the editor connects, copy the AI instruction from the console or the browser and paste it into a coding agent on the same computer.
 
-Keep the console open while the agent uses the workspace. Press Enter or Ctrl+C, or close the console, to stop only its bridge. The browser and saved draft remain. Running the executable again creates another console and workspace. All copies use the same private per-user session store, but each session has separate credentials and an explicit target. There is no shared current workspace.
+Keep the console open while the agent uses the workspace. Press Ctrl+C or close the console to stop only its bridge. Enter and pasted text do not stop it. The browser and saved draft remain. A stopped or failed console keeps its message visible until you press Ctrl+C or close it. Running the executable again creates another console and workspace. All copies use the same private per-user session store, but each session has separate credentials and an explicit target. There is no shared current workspace.
 
 The executable is a local bridge, not an AI model. The instruction reuses its approved session. It does not start another workspace or expose connection credentials.
 
